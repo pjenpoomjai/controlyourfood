@@ -104,42 +104,34 @@ Use the following documents as your primary reference:
 ---`, knowledgeBase)
 	}
 
-	return fmt.Sprintf(`คุณคือ "น้องฟิต" — ผู้ช่วย AI ด้านโภชนาการและการคุมอาหารที่เป็นมิตร
+	return fmt.Sprintf(`CRITICAL INSTRUCTION: You MUST respond in Thai language ONLY. Never use English in your response under any circumstances. Even if the user writes in English, always reply in Thai.
 
-## กฎสำคัญ
-- ตอบเป็นภาษาไทยเท่านั้น ห้ามใช้ภาษาอังกฤษในการตอบโดยเด็ดขาด
-- ถ้าผู้ใช้ถามเป็นภาษาอังกฤษ ให้ตอบกลับเป็นภาษาไทย
-- ใช้ภาษาที่เป็นกันเอง เข้าใจง่าย
+คุณคือ "น้องฟิต" — ผู้ช่วย AI ด้านโภชนาการและการคุมอาหารที่เป็นมิตร
 
-## บุคลิก
-- ใจดี ให้กำลังใจ ไม่ตัดสิน
-- กระชับ ได้ใจความ ไม่ยืดเยื้อ
-- ใช้ emoji เพื่อให้บทสนทนาน่าอ่าน
-- ให้ข้อมูลที่ถูกต้องและเป็นประโยชน์
+## กฎเหล็ก (ห้ามฝ่าฝืน)
+- ตอบเป็นภาษาไทยเท่านั้น 100%% ห้ามมีคำภาษาอังกฤษในคำตอบ
+- ถ้าผู้ใช้ถามภาษาอังกฤษ → ตอบเป็นภาษาไทยเสมอ
+- ใช้ภาษาพูดที่เป็นกันเอง เข้าใจง่าย ไม่เป็นทางการเกินไป
+
+## สไตล์การตอบ (สำคัญมาก)
+- ตอบสั้น กระชับ ตรงประเด็น — ไม่เกิน 3-5 บรรทัด
+- ห้ามพูดอ้อมค้อม ห้ามขึ้นต้นด้วยการทวนคำถาม
+- ห้ามอธิบายยืดยาว ให้ข้อมูลสำคัญอย่างเดียว
+- ใช้ emoji 1-2 ตัวพอ ไม่ใช้เยอะ
 
 ## ความสามารถ
-1. ตอบคำถามเรื่องโภชนาการ — แคลอรี่ สารอาหาร การลดน้ำหนัก การกิน clean
-2. วิเคราะห์รูปภาพอาหาร — ประเมินแคลอรี่และสารอาหาร
-3. ให้คำแนะนำ — เมนูสุขภาพ วิธีปรับพฤติกรรมการกิน
-4. ติดตามการกิน — เมื่อผู้ใช้บอกว่ากินอะไร ให้ feedback
-5. จำข้อมูลผู้ใช้ข้ามเซสชัน — น้ำหนัก ส่วนสูง เป้าหมาย อาหารที่แพ้
+- ตอบเรื่องโภชนาการ แคลอรี่ การลดน้ำหนัก
+- วิเคราะห์รูปอาหาร ประเมินแคลอรี่
+- จำข้อมูลผู้ใช้ข้ามเซสชัน
 
-## การจำข้อมูลผู้ใช้
-- ใช้ข้อมูลโปรไฟล์เพื่อให้คำแนะนำที่ตรงกับผู้ใช้
-- ถ้ายังไม่มีข้อมูล ให้ถามอย่างเป็นธรรมชาติระหว่างบทสนทนา
-
-## การวิเคราะห์รูปภาพอาหาร
-เมื่อได้รับรูปอาหาร:
-1. ระบุรายการอาหารที่เห็น
-2. ประเมินแคลอรี่รวม (ระบุเป็นช่วง เช่น 350-450 kcal)
-3. สรุปสารอาหารหลัก (โปรตีน คาร์บ ไขมัน)
-4. ให้คำแนะนำสั้นๆ
-5. ถามว่าต้องการบันทึกมื้อนี้ไหม (ตอบว่า "บันทึก" เพื่อบันทึก)
+## วิเคราะห์รูปอาหาร
+ระบุอาหาร → แคลอรี่ (ช่วง kcal) → โปรตีน/คาร์บ/ไขมัน → คำแนะนำ 1 ประโยค
 %s%s
 ## ข้อควรระวัง
-- ไม่ให้คำแนะนำทางการแพทย์ที่ต้องการแพทย์ดูแล
-- ถ้ามีปัญหาสุขภาพซับซ้อน แนะนำให้ปรึกษาแพทย์หรือนักโภชนาการ
-- ระบุเสมอว่าการประเมินแคลอรี่จากรูปมีความคลาดเคลื่อน`,
+- ไม่ให้คำแนะนำทางการแพทย์
+- แจ้งว่าแคลอรี่จากรูปอาจคลาดเคลื่อน
+
+Remember: THAI LANGUAGE ONLY. Keep responses SHORT and CONCISE.`,
 		knowledgeSection, buildProfileContext(profile))
 }
 
@@ -155,7 +147,7 @@ func callGroq(model, systemPrompt string, messages []openai.ChatCompletionMessag
 	resp, err := groqClient.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
 		Model:     model,
 		Messages:  allMessages,
-		MaxTokens: 1024,
+		MaxTokens: 400,
 	})
 	if err != nil {
 		return "", err
@@ -302,6 +294,52 @@ goal must be one of: "Lose weight", "Maintain weight", "Gain muscle", or blank.`
 
 	log.Printf("profile extracted for %s: weight=%s goal=%s", userID, existing.Weight, existing.Goal)
 	return existing
+}
+
+// DetectMealFromText uses AI to detect if a message is a user reporting what they ate.
+// Returns (food, calories) if a meal is detected, or ("", "") otherwise.
+func DetectMealFromText(message string) (string, string) {
+	if groqClient == nil {
+		return "", ""
+	}
+
+	prompt := fmt.Sprintf(`Analyze if this message is a user reporting what they just ate or drank.
+Return JSON only, no explanation.
+{"food":"","calories":"","is_meal":false}
+
+Rules:
+- food: food/drink name in Thai (what they ate), empty if not a meal report
+- calories: estimated calories as a number string (e.g. "450"), empty if unclear
+- is_meal: true ONLY if user clearly states they ate/drank something (e.g. "กินข้าวมาแล้ว", "เพิ่งทาน", "ดื่มกาแฟ", "มื้อเที่ยงกิน")
+- is_meal: false for questions, general chat, or commands
+
+Message: "%s"`, message)
+
+	reply, err := callGroq(textModel, "", []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleUser, Content: prompt},
+	})
+	if err != nil {
+		return "", ""
+	}
+
+	raw := strings.TrimSpace(reply)
+	raw = strings.TrimPrefix(raw, "```json")
+	raw = strings.TrimPrefix(raw, "```")
+	raw = strings.TrimSuffix(raw, "```")
+	raw = strings.TrimSpace(raw)
+
+	var data struct {
+		Food     string `json:"food"`
+		Calories string `json:"calories"`
+		IsMeal   bool   `json:"is_meal"`
+	}
+	if err := json.Unmarshal([]byte(raw), &data); err != nil {
+		return "", ""
+	}
+	if !data.IsMeal || strings.TrimSpace(data.Food) == "" {
+		return "", ""
+	}
+	return strings.TrimSpace(data.Food), strings.TrimSpace(data.Calories)
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

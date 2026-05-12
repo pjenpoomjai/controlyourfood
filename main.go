@@ -8,41 +8,10 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"sync"
 
 	"github.com/joho/godotenv"
 	"github.com/line/line-bot-sdk-go/v7/linebot"
 )
-
-// ── Pending meal save state ───────────────────────────────────────────────────
-
-type pendingMeal struct {
-	Food     string
-	Calories string
-}
-
-var (
-	pendingMu   sync.Mutex
-	pendingSave = make(map[string]*pendingMeal)
-)
-
-func setPending(userID string, meal *pendingMeal) {
-	pendingMu.Lock()
-	defer pendingMu.Unlock()
-	pendingSave[userID] = meal
-}
-
-func getPending(userID string) *pendingMeal {
-	pendingMu.Lock()
-	defer pendingMu.Unlock()
-	return pendingSave[userID]
-}
-
-func clearPending(userID string) {
-	pendingMu.Lock()
-	defer pendingMu.Unlock()
-	delete(pendingSave, userID)
-}
 
 // ── Global state ──────────────────────────────────────────────────────────────
 
@@ -119,7 +88,6 @@ func handleText(userID, replyToken, text string) {
 	// Special commands
 	if containsAny(lower, []string{"/clear", "clear history", "reset", "ล้างประวัติ"}) {
 		ClearHistory(userID)
-		clearPending(userID)
 		replyText(replyToken, "🔄 ล้างประวัติการสนทนาแล้วค่ะ เริ่มต้นใหม่ได้เลยนะคะ 😊")
 		return
 	}
@@ -169,32 +137,9 @@ func handleText(userID, replyToken, text string) {
 		return
 	}
 
-	// Check for pending meal confirmation
-	if pending := getPending(userID); pending != nil {
-		if containsAny(lower, []string{"save", "yes", "ok", "confirm", "log", "บันทึก", "ใช่", "ตกลง"}) {
-			sm := GetSheets()
-			username := getUserName(userID)
-			ok := sm.LogMeal(userID, username, pending.Food, pending.Calories)
-			clearPending(userID)
-			if ok {
-				replyText(replyToken, fmt.Sprintf(
-					"✅ บันทึกแล้วค่ะ!\n🍽️ %s\n🔥 %s kcal",
-					pending.Food, pending.Calories,
-				))
-			} else {
-				replyText(replyToken, "⚠️ ขออภัยค่ะ บันทึกไม่สำเร็จ กรุณาลองใหม่อีกครั้งนะคะ")
-			}
-			return
-		}
-		if containsAny(lower, []string{"no", "cancel", "skip", "ไม่", "ยกเลิก", "ข้าม"}) {
-			clearPending(userID)
-			replyText(replyToken, "👌 ไม่เป็นไรค่ะ ไม่บันทึก มีอะไรให้ช่วยเพิ่มเติมไหมคะ?")
-			return
-		}
-	}
-
-	// Auto-extract and save profile info using AI (runs in background)
+	// Auto-extract profile info and detect meal logs — both run in background
 	go func() {
+		// Save profile data if mentioned
 		extracted := ExtractProfileFromMessage(userID, trimmed)
 		if extracted != nil {
 			if extracted.Name == "" {
@@ -203,9 +148,17 @@ func handleText(userID, replyToken, text string) {
 			GetSheets().SaveUserProfile(extracted)
 			log.Printf("profile auto-saved for user: %s", userID)
 		}
+
+		// Auto-detect and save meal if user is reporting what they ate
+		food, calories := DetectMealFromText(trimmed)
+		if food != "" {
+			username := getUserName(userID)
+			GetSheets().LogMeal(userID, username, food, calories)
+			log.Printf("meal auto-logged for %s: %s (%s kcal)", userID, food, calories)
+		}
 	}()
 
-	// Send to Gemini
+	// Send to AI and reply
 	reply := AskText(userID, trimmed, knowledgeBase)
 	replyText(replyToken, reply)
 }
@@ -230,8 +183,15 @@ func handleImage(userID, replyToken, messageID string) {
 
 	reply, calories := AskImage(userID, imageBytes, "image/jpeg", knowledgeBase)
 
+	// Auto-save meal immediately — no confirmation needed (survives server restarts)
 	if calories != "" {
-		setPending(userID, &pendingMeal{Food: "Food from image", Calories: calories})
+		username := getUserName(userID)
+		sm := GetSheets()
+		if sm.LogMeal(userID, username, "อาหารจากรูปภาพ", calories) {
+			reply += "\n\n✅ บันทึกมื้อนี้แล้วค่ะ!"
+		} else {
+			reply += "\n\n⚠️ บันทึกไม่สำเร็จ กรุณาลองส่งรูปใหม่อีกครั้งนะคะ"
+		}
 	}
 
 	replyText(replyToken, reply)
