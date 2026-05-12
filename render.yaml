@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: control-your-food-bot
+    runtime: go
+    buildCommand: go build -o bot .
+    startCommand: ./bot
+    envVars:
+      - key: LINE_CHANNEL_SECRET
+        sync: false
+      - key: LINE_CHANNEL_ACCESS_TOKEN
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: GOOGLE_CREDENTIALS_PATH
+        value: google_credentials.json
+      - key: SPREADSHEET_ID
+        sync: false
+      - key: GO_VERSION
+        value: 1.21.0

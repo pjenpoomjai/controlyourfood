@@ -1,0 +1,14 @@
+# Secrets — ห้าม commit เด็ดขาด!
+.env
+google_credentials.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# OS
+.DS_Store
+Thumbs.db
