@@ -15,6 +15,21 @@ import (
 
 var sheetHeaders = []interface{}{"Date", "Time", "User ID", "Username", "Food", "Calories (kcal)", "Notes"}
 
+var profileHeaders = []interface{}{"User ID", "Name", "Weight (kg)", "Height (cm)", "Goal", "Daily Calories", "Restrictions", "Notes", "Last Updated"}
+
+// UserProfile holds persistent information about a user.
+type UserProfile struct {
+	UserID        string
+	Name          string
+	Weight        string
+	Height        string
+	Goal          string
+	DailyCalories string
+	Restrictions  string
+	Notes         string
+	UpdatedAt     string
+}
+
 // SheetsManager handles Google Sheets read/write operations.
 type SheetsManager struct {
 	srv           *sheets.Service
@@ -71,6 +86,7 @@ func newSheetsManager() *SheetsManager {
 	}
 
 	sm.ensureSheet()
+	sm.ensureProfileSheet()
 	log.Println("Google Sheets connected successfully")
 	return sm
 }
@@ -123,6 +139,107 @@ func (sm *SheetsManager) appendRow(values []interface{}) error {
 		ValueInputOption("USER_ENTERED").
 		Do()
 	return err
+}
+
+// ensureProfileSheet creates the User Profiles sheet if it doesn't exist.
+func (sm *SheetsManager) ensureProfileSheet() {
+	if !sm.IsConnected() {
+		return
+	}
+	ss, err := sm.srv.Spreadsheets.Get(sm.spreadsheetID).Do()
+	if err != nil {
+		return
+	}
+	for _, s := range ss.Sheets {
+		if s.Properties.Title == "User Profiles" {
+			return
+		}
+	}
+	req := &sheets.BatchUpdateSpreadsheetRequest{
+		Requests: []*sheets.Request{
+			{AddSheet: &sheets.AddSheetRequest{
+				Properties: &sheets.SheetProperties{Title: "User Profiles"},
+			}},
+		},
+	}
+	if _, err = sm.srv.Spreadsheets.BatchUpdate(sm.spreadsheetID, req).Do(); err != nil {
+		log.Printf("failed to create User Profiles sheet: %v", err)
+		return
+	}
+	vr := &sheets.ValueRange{Values: [][]interface{}{profileHeaders}}
+	_, _ = sm.srv.Spreadsheets.Values.
+		Append(sm.spreadsheetID, "User Profiles", vr).
+		ValueInputOption("USER_ENTERED").Do()
+	log.Println("created 'User Profiles' sheet")
+}
+
+// GetUserProfile retrieves the profile for a user, or returns an empty profile.
+func (sm *SheetsManager) GetUserProfile(userID string) *UserProfile {
+	if !sm.IsConnected() {
+		return &UserProfile{UserID: userID}
+	}
+	resp, err := sm.srv.Spreadsheets.Values.Get(sm.spreadsheetID, "User Profiles!A:I").Do()
+	if err != nil || len(resp.Values) < 2 {
+		return &UserProfile{UserID: userID}
+	}
+	for _, row := range resp.Values[1:] {
+		if len(row) > 0 && fmt.Sprint(row[0]) == userID {
+			p := &UserProfile{UserID: userID}
+			if len(row) > 1 { p.Name = fmt.Sprint(row[1]) }
+			if len(row) > 2 { p.Weight = fmt.Sprint(row[2]) }
+			if len(row) > 3 { p.Height = fmt.Sprint(row[3]) }
+			if len(row) > 4 { p.Goal = fmt.Sprint(row[4]) }
+			if len(row) > 5 { p.DailyCalories = fmt.Sprint(row[5]) }
+			if len(row) > 6 { p.Restrictions = fmt.Sprint(row[6]) }
+			if len(row) > 7 { p.Notes = fmt.Sprint(row[7]) }
+			return p
+		}
+	}
+	return &UserProfile{UserID: userID}
+}
+
+// SaveUserProfile creates or updates a user's profile row.
+func (sm *SheetsManager) SaveUserProfile(p *UserProfile) bool {
+	if !sm.IsConnected() {
+		return false
+	}
+	p.UpdatedAt = time.Now().Format("2006-01-02 15:04:05")
+	newRow := []interface{}{
+		p.UserID, p.Name, p.Weight, p.Height,
+		p.Goal, p.DailyCalories, p.Restrictions, p.Notes, p.UpdatedAt,
+	}
+
+	// Find existing row to update
+	resp, err := sm.srv.Spreadsheets.Values.Get(sm.spreadsheetID, "User Profiles!A:A").Do()
+	if err == nil {
+		for i, row := range resp.Values {
+			if len(row) > 0 && fmt.Sprint(row[0]) == p.UserID {
+				rowNum := i + 1
+				rangeStr := fmt.Sprintf("User Profiles!A%d:I%d", rowNum, rowNum)
+				vr := &sheets.ValueRange{Values: [][]interface{}{newRow}}
+				_, err = sm.srv.Spreadsheets.Values.Update(sm.spreadsheetID, rangeStr, vr).
+					ValueInputOption("USER_ENTERED").Do()
+				if err != nil {
+					log.Printf("failed to update profile: %v", err)
+					return false
+				}
+				log.Printf("updated profile for user: %s", p.UserID)
+				return true
+			}
+		}
+	}
+
+	// New user — append row
+	vr := &sheets.ValueRange{Values: [][]interface{}{newRow}}
+	_, err = sm.srv.Spreadsheets.Values.
+		Append(sm.spreadsheetID, "User Profiles", vr).
+		ValueInputOption("USER_ENTERED").Do()
+	if err != nil {
+		log.Printf("failed to save profile: %v", err)
+		return false
+	}
+	log.Printf("created profile for user: %s", p.UserID)
+	return true
 }
 
 // LogMeal records a meal entry to Google Sheets.

@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 
@@ -136,12 +137,36 @@ func handleText(userID, replyToken, text string) {
 			"📌 What I can do:\n" +
 			"• Send a food photo → estimate calories\n" +
 			"• Ask about nutrition / weight loss\n" +
-			"• Tell me what you ate → log it to Google Sheets\n\n" +
+			"• Tell me what you ate → log it to Google Sheets\n" +
+			"• Remember your profile across sessions\n\n" +
 			"📌 Commands:\n" +
 			"• 'my meals' — view recent meal history\n" +
+			"• 'my profile' — view your saved profile\n" +
+			"• 'update profile' — update your info\n" +
 			"• 'reset' — clear conversation history\n" +
 			"• 'help' — show this menu"
 		replyText(replyToken, help)
+		return
+	}
+
+	if containsAny(lower, []string{"my profile", "ข้อมูลของฉัน", "โปรไฟล์"}) {
+		sm := GetSheets()
+		p := sm.GetUserProfile(userID)
+		msg := formatProfile(p)
+		replyText(replyToken, msg)
+		return
+	}
+
+	if containsAny(lower, []string{"update profile", "แก้ไขข้อมูล", "อัปเดตข้อมูล"}) {
+		replyText(replyToken,
+			"📝 Let's update your profile! Please tell me:\n\n"+
+				"1. Your name\n"+
+				"2. Weight (kg)\n"+
+				"3. Height (cm)\n"+
+				"4. Goal (lose weight / maintain / gain muscle)\n"+
+				"5. Daily calorie target (if you know it)\n"+
+				"6. Any dietary restrictions or allergies\n\n"+
+				"You can share all at once or just the parts you want to update 😊")
 		return
 	}
 
@@ -169,7 +194,10 @@ func handleText(userID, replyToken, text string) {
 		}
 	}
 
-	// Send to Claude
+	// Auto-save profile info if user shares personal data
+	go SaveUserProfileFromText(userID, getUserName(userID), trimmed)
+
+	// Send to Gemini
 	reply := AskText(userID, trimmed, knowledgeBase)
 	replyText(replyToken, reply)
 }
@@ -199,6 +227,58 @@ func handleImage(userID, replyToken, messageID string) {
 	}
 
 	replyText(replyToken, reply)
+}
+
+// ── Profile helpers ───────────────────────────────────────────────────────────
+
+func formatProfile(p *UserProfile) string {
+	if p.Name == "" && p.Weight == "" && p.Goal == "" {
+		return "📋 No profile saved yet.\n\nSay 'update profile' to set up your info and I'll remember it for every session! 😊"
+	}
+	lines := "📋 Your Profile\n\n"
+	if p.Name != "" { lines += "👤 Name: " + p.Name + "\n" }
+	if p.Weight != "" { lines += "⚖️ Weight: " + p.Weight + " kg\n" }
+	if p.Height != "" { lines += "📏 Height: " + p.Height + " cm\n" }
+	if p.Goal != "" { lines += "🎯 Goal: " + p.Goal + "\n" }
+	if p.DailyCalories != "" { lines += "🔥 Daily Calories: " + p.DailyCalories + " kcal\n" }
+	if p.Restrictions != "" { lines += "🚫 Restrictions: " + p.Restrictions + "\n" }
+	if p.Notes != "" { lines += "📝 Notes: " + p.Notes + "\n" }
+	if p.UpdatedAt != "" { lines += "\n🕐 Last updated: " + p.UpdatedAt }
+	return lines
+}
+
+// SaveUserProfileFromText parses profile info from free text and saves it.
+func SaveUserProfileFromText(userID, username, text string) {
+	sm := GetSheets()
+	if !sm.IsConnected() {
+		return
+	}
+	p := sm.GetUserProfile(userID)
+	if p.Name == "" {
+		p.Name = username
+	}
+	p.UserID = userID
+
+	lower := strings.ToLower(text)
+
+	// Weight
+	weightRe := regexp.MustCompile(`(?i)(?:weight|น้ำหนัก)[:\s]*(\d+(?:\.\d+)?)\s*(?:kg|กก|กิโล)?`)
+	if m := weightRe.FindStringSubmatch(lower); len(m) > 1 { p.Weight = m[1] }
+
+	// Height
+	heightRe := regexp.MustCompile(`(?i)(?:height|ส่วนสูง)[:\s]*(\d+(?:\.\d+)?)\s*(?:cm|ซม|เซน)?`)
+	if m := heightRe.FindStringSubmatch(lower); len(m) > 1 { p.Height = m[1] }
+
+	// Daily calories
+	calRe := regexp.MustCompile(`(?i)(?:calorie|แคลอรี่|kcal)[^0-9]*(\d+)`)
+	if m := calRe.FindStringSubmatch(lower); len(m) > 1 { p.DailyCalories = m[1] }
+
+	// Goal keywords
+	if containsAny(lower, []string{"lose weight", "ลดน้ำหนัก", "ลดความอ้วน"}) { p.Goal = "Lose weight" }
+	if containsAny(lower, []string{"maintain", "คงน้ำหนัก", "รักษาน้ำหนัก"}) { p.Goal = "Maintain weight" }
+	if containsAny(lower, []string{"gain muscle", "เพิ่มกล้ามเนื้อ", "bulk"}) { p.Goal = "Gain muscle" }
+
+	sm.SaveUserProfile(p)
 }
 
 // ── Gemini test endpoint ──────────────────────────────────────────────────────

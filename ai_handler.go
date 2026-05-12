@@ -106,6 +106,25 @@ func ClearHistory(userID string) {
 
 // ── System prompt ─────────────────────────────────────────────────────────────
 
+// buildProfileContext formats a user profile into a context string for the AI.
+func buildProfileContext(p *UserProfile) string {
+	if p == nil {
+		return ""
+	}
+	var parts []string
+	if p.Name != "" { parts = append(parts, "Name: "+p.Name) }
+	if p.Weight != "" { parts = append(parts, "Weight: "+p.Weight+" kg") }
+	if p.Height != "" { parts = append(parts, "Height: "+p.Height+" cm") }
+	if p.Goal != "" { parts = append(parts, "Goal: "+p.Goal) }
+	if p.DailyCalories != "" { parts = append(parts, "Daily calorie target: "+p.DailyCalories+" kcal") }
+	if p.Restrictions != "" { parts = append(parts, "Dietary restrictions: "+p.Restrictions) }
+	if p.Notes != "" { parts = append(parts, "Additional notes: "+p.Notes) }
+	if len(parts) == 0 {
+		return ""
+	}
+	return "\n## User Profile (remembered from previous sessions)\n" + strings.Join(parts, "\n") + "\n"
+}
+
 func buildSystemPrompt(knowledgeBase string) string {
 	knowledgeSection := ""
 	if knowledgeBase != "" {
@@ -132,6 +151,12 @@ Use the following documents as your primary reference when answering questions:
 2. Analyze food images — estimate calories and nutritional breakdown
 3. Give recommendations — healthy meal ideas, tips for better eating habits
 4. Track meals — when users describe what they ate, provide feedback and estimates
+5. Remember user information across sessions (weight, height, goals, dietary needs)
+
+## User Profile Memory
+- When users share personal info (weight, height, goals, allergies), acknowledge it warmly
+- Use profile info to personalize advice (e.g. adjust calorie recommendations to their goal)
+- If no profile exists yet, naturally ask for basic info during conversation
 
 ## Image Analysis
 When receiving a food image:
@@ -149,10 +174,11 @@ When receiving a food image:
 
 // ── Model builder ─────────────────────────────────────────────────────────────
 
-func newModel(knowledgeBase string) *genai.GenerativeModel {
+func newModel(knowledgeBase string, profile *UserProfile) *genai.GenerativeModel {
 	model := geminiClient.GenerativeModel(activeModelName)
+	systemPrompt := buildSystemPrompt(knowledgeBase) + buildProfileContext(profile)
 	model.SystemInstruction = &genai.Content{
-		Parts: []genai.Part{genai.Text(buildSystemPrompt(knowledgeBase))},
+		Parts: []genai.Part{genai.Text(systemPrompt)},
 	}
 	temp := float32(0.7)
 	maxTokens := int32(1024)
@@ -200,7 +226,8 @@ func sendWithRetry(cs *genai.ChatSession, parts ...genai.Part) (*genai.GenerateC
 
 // AskText sends a text message to Gemini and returns the reply.
 func AskText(userID, message, knowledgeBase string) string {
-	model := newModel(knowledgeBase)
+	profile := GetSheets().GetUserProfile(userID)
+	model := newModel(knowledgeBase, profile)
 	cs := model.StartChat()
 	cs.History = getHistory(userID)
 
@@ -218,7 +245,8 @@ func AskText(userID, message, knowledgeBase string) string {
 
 // AskImage sends a food image to Gemini and returns (reply, estimatedCalories).
 func AskImage(userID string, imageBytes []byte, mediaType, knowledgeBase string) (string, string) {
-	model := newModel(knowledgeBase)
+	profile := GetSheets().GetUserProfile(userID)
+	model := newModel(knowledgeBase, profile)
 	cs := model.StartChat()
 	cs.History = getHistory(userID)
 
