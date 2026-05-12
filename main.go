@@ -256,15 +256,16 @@ func formatProfile(p *UserProfile) string {
 }
 
 
-// ── Gemini test endpoint ──────────────────────────────────────────────────────
+// ── Groq test endpoint ────────────────────────────────────────────────────────
 
-func testGeminiHandler(w http.ResponseWriter, r *http.Request) {
+func testGroqHandler(w http.ResponseWriter, r *http.Request) {
 	reply := AskText("test-user", "Say 'FitBot is ready!' in Thai.", "")
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{
-		"model":  activeModelName,
-		"reply":  reply,
-		"status": "ok",
+		"text_model":   textModel,
+		"vision_model": visionModel,
+		"reply":        reply,
+		"status":       "ok",
 	})
 }
 
@@ -304,15 +305,15 @@ func main() {
 	knowledgeBase = LoadAllDocuments("knowledge")
 	log.Printf("knowledge base loaded: %d chars", len(knowledgeBase))
 
-	// Initialize Gemini AI client
-	InitGemini()
+	// Initialize Groq AI client
+	InitGroq()
 
 	// Initialize Google Sheets
 	GetSheets()
 
 	// Register HTTP routes
 	http.HandleFunc("/webhook", webhookHandler)
-	http.HandleFunc("/test-gemini", testGeminiHandler)
+	http.HandleFunc("/test-groq", testGroqHandler)
 	http.HandleFunc("/", healthHandler)
 
 	port := os.Getenv("PORT")
