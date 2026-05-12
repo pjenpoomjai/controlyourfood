@@ -117,38 +117,38 @@ func handleText(userID, replyToken, text string) {
 	lower := strings.ToLower(trimmed)
 
 	// Special commands
-	if containsAny(lower, []string{"/clear", "clear history", "reset"}) {
+	if containsAny(lower, []string{"/clear", "clear history", "reset", "ล้างประวัติ"}) {
 		ClearHistory(userID)
 		clearPending(userID)
-		replyText(replyToken, "🔄 Conversation history cleared! Feel free to start fresh.")
+		replyText(replyToken, "🔄 ล้างประวัติการสนทนาแล้วค่ะ เริ่มต้นใหม่ได้เลยนะคะ 😊")
 		return
 	}
 
-	if containsAny(lower, []string{"/history", "meal history", "my meals"}) {
+	if containsAny(lower, []string{"/history", "meal history", "my meals", "ประวัติมื้ออาหาร", "ดูประวัติ"}) {
 		sm := GetSheets()
 		records := sm.GetUserHistory(userID, 10)
 		replyText(replyToken, sm.FormatHistory(records))
 		return
 	}
 
-	if containsAny(lower, []string{"/help", "help", "commands"}) {
-		help := "🤖 FitBot — Your Diet Assistant\n\n" +
-			"📌 What I can do:\n" +
-			"• Send a food photo → estimate calories\n" +
-			"• Ask about nutrition / weight loss\n" +
-			"• Tell me what you ate → log it to Google Sheets\n" +
-			"• Remember your profile across sessions\n\n" +
-			"📌 Commands:\n" +
-			"• 'my meals' — view recent meal history\n" +
-			"• 'my profile' — view your saved profile\n" +
-			"• 'update profile' — update your info\n" +
-			"• 'reset' — clear conversation history\n" +
-			"• 'help' — show this menu"
+	if containsAny(lower, []string{"/help", "help", "commands", "ช่วยเหลือ", "วิธีใช้"}) {
+		help := "🤖 น้องฟิต — ผู้ช่วยคุมอาหารของคุณ\n\n" +
+			"📌 ฉันทำอะไรได้บ้าง:\n" +
+			"• ส่งรูปอาหาร → ประเมินแคลอรี่\n" +
+			"• ถามเรื่องโภชนาการ / การลดน้ำหนัก\n" +
+			"• บอกว่ากินอะไร → บันทึกลง Google Sheets\n" +
+			"• จำข้อมูลโปรไฟล์ข้ามเซสชัน\n\n" +
+			"📌 คำสั่ง:\n" +
+			"• 'ดูประวัติ' — ดูประวัติมื้ออาหารล่าสุด\n" +
+			"• 'โปรไฟล์ของฉัน' — ดูข้อมูลที่บันทึกไว้\n" +
+			"• 'อัปเดตข้อมูล' — แก้ไขข้อมูลส่วนตัว\n" +
+			"• 'ล้างประวัติ' — ล้างประวัติการสนทนา\n" +
+			"• 'ช่วยเหลือ' — แสดงเมนูนี้"
 		replyText(replyToken, help)
 		return
 	}
 
-	if containsAny(lower, []string{"my profile", "ข้อมูลของฉัน", "โปรไฟล์"}) {
+	if containsAny(lower, []string{"my profile", "โปรไฟล์ของฉัน", "ข้อมูลของฉัน", "โปรไฟล์"}) {
 		sm := GetSheets()
 		p := sm.GetUserProfile(userID)
 		msg := formatProfile(p)
@@ -156,39 +156,39 @@ func handleText(userID, replyToken, text string) {
 		return
 	}
 
-	if containsAny(lower, []string{"update profile", "แก้ไขข้อมูล", "อัปเดตข้อมูล"}) {
+	if containsAny(lower, []string{"update profile", "แก้ไขข้อมูล", "อัปเดตข้อมูล", "แก้ไขโปรไฟล์"}) {
 		replyText(replyToken,
-			"📝 Let's update your profile! Please tell me:\n\n"+
-				"1. Your name\n"+
-				"2. Weight (kg)\n"+
-				"3. Height (cm)\n"+
-				"4. Goal (lose weight / maintain / gain muscle)\n"+
-				"5. Daily calorie target (if you know it)\n"+
-				"6. Any dietary restrictions or allergies\n\n"+
-				"You can share all at once or just the parts you want to update 😊")
+			"📝 มาอัปเดตข้อมูลกันเลยค่ะ! บอกฉันได้เลยว่า:\n\n"+
+				"1. ชื่อ\n"+
+				"2. น้ำหนัก (กก.)\n"+
+				"3. ส่วนสูง (ซม.)\n"+
+				"4. เป้าหมาย (ลดน้ำหนัก / รักษาน้ำหนัก / เพิ่มกล้ามเนื้อ)\n"+
+				"5. เป้าหมายแคลอรี่ต่อวัน (ถ้าทราบ)\n"+
+				"6. อาหารที่แพ้หรือข้อจำกัดด้านอาหาร\n\n"+
+				"บอกทีเดียวหรือแค่บางส่วนที่ต้องการอัปเดตก็ได้เลยนะคะ 😊")
 		return
 	}
 
 	// Check for pending meal confirmation
 	if pending := getPending(userID); pending != nil {
-		if containsAny(lower, []string{"save", "yes", "ok", "confirm", "log", "บันทึก", "ใช่"}) {
+		if containsAny(lower, []string{"save", "yes", "ok", "confirm", "log", "บันทึก", "ใช่", "ตกลง"}) {
 			sm := GetSheets()
 			username := getUserName(userID)
 			ok := sm.LogMeal(userID, username, pending.Food, pending.Calories)
 			clearPending(userID)
 			if ok {
 				replyText(replyToken, fmt.Sprintf(
-					"✅ Meal logged!\n🍽️ %s\n🔥 %s kcal",
+					"✅ บันทึกแล้วค่ะ!\n🍽️ %s\n🔥 %s kcal",
 					pending.Food, pending.Calories,
 				))
 			} else {
-				replyText(replyToken, "⚠️ Could not save the meal right now. Please try again later.")
+				replyText(replyToken, "⚠️ ขออภัยค่ะ บันทึกไม่สำเร็จ กรุณาลองใหม่อีกครั้งนะคะ")
 			}
 			return
 		}
-		if containsAny(lower, []string{"no", "cancel", "skip", "ไม่"}) {
+		if containsAny(lower, []string{"no", "cancel", "skip", "ไม่", "ยกเลิก", "ข้าม"}) {
 			clearPending(userID)
-			replyText(replyToken, "👌 Got it, not saving. Anything else I can help with?")
+			replyText(replyToken, "👌 ไม่เป็นไรค่ะ ไม่บันทึก มีอะไรให้ช่วยเพิ่มเติมไหมคะ?")
 			return
 		}
 	}
@@ -216,7 +216,7 @@ func handleImage(userID, replyToken, messageID string) {
 	content, err := bot.GetMessageContent(messageID).Do()
 	if err != nil {
 		log.Printf("failed to download image [%s]: %v", userID, err)
-		replyText(replyToken, "Sorry, I couldn't download the image. Please try again. 🙏")
+		replyText(replyToken, "ขออภัยค่ะ ไม่สามารถดาวน์โหลดรูปได้ กรุณาลองใหม่อีกครั้งนะคะ 🙏")
 		return
 	}
 	defer content.Content.Close()
@@ -224,7 +224,7 @@ func handleImage(userID, replyToken, messageID string) {
 	imageBytes, err := io.ReadAll(content.Content)
 	if err != nil {
 		log.Printf("failed to read image [%s]: %v", userID, err)
-		replyText(replyToken, "Sorry, I couldn't process the image. Please try again. 🙏")
+		replyText(replyToken, "ขออภัยค่ะ ไม่สามารถประมวลผลรูปได้ กรุณาลองใหม่อีกครั้งนะคะ 🙏")
 		return
 	}
 
@@ -241,17 +241,17 @@ func handleImage(userID, replyToken, messageID string) {
 
 func formatProfile(p *UserProfile) string {
 	if p.Name == "" && p.Weight == "" && p.Goal == "" {
-		return "📋 No profile saved yet.\n\nSay 'update profile' to set up your info and I'll remember it for every session! 😊"
+		return "📋 ยังไม่มีข้อมูลโปรไฟล์ค่ะ\n\nพิมพ์ 'อัปเดตข้อมูล' เพื่อบันทึกข้อมูลของคุณ แล้วฉันจะจำไว้ทุกครั้งเลยนะคะ 😊"
 	}
-	lines := "📋 Your Profile\n\n"
-	if p.Name != "" { lines += "👤 Name: " + p.Name + "\n" }
-	if p.Weight != "" { lines += "⚖️ Weight: " + p.Weight + " kg\n" }
-	if p.Height != "" { lines += "📏 Height: " + p.Height + " cm\n" }
-	if p.Goal != "" { lines += "🎯 Goal: " + p.Goal + "\n" }
-	if p.DailyCalories != "" { lines += "🔥 Daily Calories: " + p.DailyCalories + " kcal\n" }
-	if p.Restrictions != "" { lines += "🚫 Restrictions: " + p.Restrictions + "\n" }
-	if p.Notes != "" { lines += "📝 Notes: " + p.Notes + "\n" }
-	if p.UpdatedAt != "" { lines += "\n🕐 Last updated: " + p.UpdatedAt }
+	lines := "📋 โปรไฟล์ของคุณ\n\n"
+	if p.Name != "" { lines += "👤 ชื่อ: " + p.Name + "\n" }
+	if p.Weight != "" { lines += "⚖️ น้ำหนัก: " + p.Weight + " กก.\n" }
+	if p.Height != "" { lines += "📏 ส่วนสูง: " + p.Height + " ซม.\n" }
+	if p.Goal != "" { lines += "🎯 เป้าหมาย: " + p.Goal + "\n" }
+	if p.DailyCalories != "" { lines += "🔥 แคลอรี่ต่อวัน: " + p.DailyCalories + " kcal\n" }
+	if p.Restrictions != "" { lines += "🚫 ข้อจำกัดอาหาร: " + p.Restrictions + "\n" }
+	if p.Notes != "" { lines += "📝 หมายเหตุ: " + p.Notes + "\n" }
+	if p.UpdatedAt != "" { lines += "\n🕐 อัปเดตล่าสุด: " + p.UpdatedAt }
 	return lines
 }
 

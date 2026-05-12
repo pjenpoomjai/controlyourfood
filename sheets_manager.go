@@ -315,11 +315,11 @@ func (sm *SheetsManager) GetUserHistory(userID string, limit int) []map[string]s
 // FormatHistory formats meal records into a readable string.
 func (sm *SheetsManager) FormatHistory(records []map[string]string) string {
 	if len(records) == 0 {
-		return "No meal history found."
+		return "📋 ยังไม่มีประวัติมื้ออาหารค่ะ\n\nลองส่งรูปอาหารหรือบอกว่ากินอะไรเพื่อเริ่มบันทึกได้เลยนะคะ 😊"
 	}
 
 	var lines []string
-	lines = append(lines, "📋 Recent Meal History\n")
+	lines = append(lines, "📋 ประวัติมื้ออาหารล่าสุด\n")
 	for i, r := range records {
 		lines = append(lines, fmt.Sprintf(
 			"%d. [%s %s]\n   🍽️ %s\n   🔥 %s kcal",
