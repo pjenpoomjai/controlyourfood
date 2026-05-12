@@ -3,6 +3,7 @@ module controlyourfood
 go 1.21
 
 require (
+	github.com/google/generative-ai-go v0.19.0
 	github.com/joho/godotenv v1.5.1
 	github.com/ledongthuc/pdf v0.0.0-20220302134840-0c2507a12d80
 	github.com/line/line-bot-sdk-go/v7 v7.21.0

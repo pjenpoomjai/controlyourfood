@@ -237,6 +237,9 @@ func main() {
 	knowledgeBase = LoadAllDocuments("knowledge")
 	log.Printf("knowledge base loaded: %d chars", len(knowledgeBase))
 
+	// Initialize Gemini AI client
+	InitGemini()
+
 	// Initialize Google Sheets
 	GetSheets()
 

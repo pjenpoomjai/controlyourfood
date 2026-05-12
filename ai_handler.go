@@ -1,79 +1,57 @@
 package main
 
 import (
-	"bytes"
-	"encoding/base64"
-	"encoding/json"
+	"context"
 	"fmt"
-	"io"
 	"log"
-	"net/http"
 	"os"
 	"regexp"
 	"sync"
+
+	"github.com/google/generative-ai-go/genai"
+	"google.golang.org/api/option"
 )
 
 const (
-	anthropicAPI = "https://api.anthropic.com/v1/messages"
-	claudeModel  = "claude-opus-4-6"
-	maxHistory   = 20
+	geminiModel = "gemini-2.0-flash"
+	maxHistory  = 20
 )
 
-// ── Anthropic API structs ─────────────────────────────────────────────────────
+// ── Gemini client ─────────────────────────────────────────────────────────────
 
-type anthropicRequest struct {
-	Model     string    `json:"model"`
-	MaxTokens int       `json:"max_tokens"`
-	System    string    `json:"system"`
-	Messages  []chatMsg `json:"messages"`
-}
+var geminiClient *genai.Client
 
-type chatMsg struct {
-	Role    string      `json:"role"`
-	Content interface{} `json:"content"` // string or []contentBlock
-}
-
-type contentBlock struct {
-	Type   string       `json:"type"`
-	Text   string       `json:"text,omitempty"`
-	Source *imageSource `json:"source,omitempty"`
-}
-
-type imageSource struct {
-	Type      string `json:"type"`
-	MediaType string `json:"media_type"`
-	Data      string `json:"data"`
-}
-
-type anthropicResponse struct {
-	Content []struct {
-		Text string `json:"text"`
-	} `json:"content"`
-	Error *struct {
-		Message string `json:"message"`
-	} `json:"error,omitempty"`
+// InitGemini creates the shared Gemini client. Call once at startup.
+func InitGemini() {
+	ctx := context.Background()
+	var err error
+	geminiClient, err = genai.NewClient(ctx, option.WithAPIKey(os.Getenv("GEMINI_API_KEY")))
+	if err != nil {
+		log.Fatalf("failed to create Gemini client: %v", err)
+	}
+	log.Println("Gemini client initialized")
 }
 
 // ── Conversation history ──────────────────────────────────────────────────────
 
 var (
 	historyMu sync.Mutex
-	history   = make(map[string][]chatMsg)
+	history   = make(map[string][]*genai.Content)
 )
 
-func getHistory(userID string) []chatMsg {
+func getHistory(userID string) []*genai.Content {
 	historyMu.Lock()
 	defer historyMu.Unlock()
-	msgs := history[userID]
-	result := make([]chatMsg, len(msgs))
-	copy(result, msgs)
+	h := history[userID]
+	result := make([]*genai.Content, len(h))
+	copy(result, h)
 	return result
 }
 
-func addHistory(userID, role string, content interface{}) {
+func addHistory(userID string, content *genai.Content) {
 	historyMu.Lock()
 	defer historyMu.Unlock()
-	history[userID] = append(history[userID], chatMsg{Role: role, Content: content})
+	history[userID] = append(history[userID], content)
 	if len(history[userID]) > maxHistory {
 		history[userID] = history[userID][len(history[userID])-maxHistory:]
 	}
@@ -137,114 +115,99 @@ When receiving a food image:
 - Always mention that calorie estimates from images are approximate`, knowledgeSection)
 }
 
-// ── Claude API call ───────────────────────────────────────────────────────────
+// ── Shared model builder ──────────────────────────────────────────────────────
 
-func callClaude(msgs []chatMsg, system string) (string, error) {
-	reqBody := anthropicRequest{
-		Model:     claudeModel,
-		MaxTokens: 1024,
-		System:    system,
-		Messages:  msgs,
+func newModel(knowledgeBase string) *genai.GenerativeModel {
+	model := geminiClient.GenerativeModel(geminiModel)
+	model.SystemInstruction = &genai.Content{
+		Parts: []genai.Part{genai.Text(buildSystemPrompt(knowledgeBase))},
 	}
-
-	body, err := json.Marshal(reqBody)
-	if err != nil {
-		return "", fmt.Errorf("marshal error: %w", err)
-	}
-
-	req, err := http.NewRequest("POST", anthropicAPI, bytes.NewReader(body))
-	if err != nil {
-		return "", fmt.Errorf("request error: %w", err)
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-api-key", os.Getenv("ANTHROPIC_API_KEY"))
-	req.Header.Set("anthropic-version", "2023-06-01")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("http error: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("read error: %w", err)
-	}
-
-	var ar anthropicResponse
-	if err := json.Unmarshal(respBytes, &ar); err != nil {
-		return "", fmt.Errorf("unmarshal error: %w", err)
-	}
-
-	if ar.Error != nil {
-		return "", fmt.Errorf("anthropic API error: %s", ar.Error.Message)
-	}
-
-	if len(ar.Content) == 0 {
-		return "", fmt.Errorf("empty response from API")
-	}
-
-	return ar.Content[0].Text, nil
+	temp := float32(0.7)
+	model.Temperature = &temp
+	model.MaxOutputTokens = 1024
+	return model
 }
 
 // ── Public functions ──────────────────────────────────────────────────────────
 
-// AskText sends a text message to Claude and returns the reply.
+// AskText sends a text message to Gemini and returns the reply.
 func AskText(userID, message, knowledgeBase string) string {
-	addHistory(userID, "user", message)
-	msgs := getHistory(userID)
+	ctx := context.Background()
+	model := newModel(knowledgeBase)
 
-	reply, err := callClaude(msgs, buildSystemPrompt(knowledgeBase))
+	cs := model.StartChat()
+	cs.History = getHistory(userID)
+
+	resp, err := cs.SendMessage(ctx, genai.Text(message))
 	if err != nil {
-		log.Printf("Claude text error [%s]: %v", userID, err)
-		popHistory(userID)
+		log.Printf("Gemini text error [%s]: %v", userID, err)
 		return "Sorry, something went wrong. Please try again. 🙏"
 	}
 
-	addHistory(userID, "assistant", reply)
+	reply := responseText(resp)
+
+	// Save both turns to history
+	addHistory(userID, &genai.Content{Role: "user", Parts: []genai.Part{genai.Text(message)}})
+	addHistory(userID, &genai.Content{Role: "model", Parts: []genai.Part{genai.Text(reply)}})
+
 	return reply
 }
 
-// AskImage sends a food image to Claude and returns (reply, estimatedCalories).
+// AskImage sends a food image to Gemini and returns (reply, estimatedCalories).
 func AskImage(userID string, imageBytes []byte, mediaType, knowledgeBase string) (string, string) {
-	imgData := base64.StdEncoding.EncodeToString(imageBytes)
+	ctx := context.Background()
+	model := newModel(knowledgeBase)
 
-	userContent := []contentBlock{
-		{
-			Type: "image",
-			Source: &imageSource{
-				Type:      "base64",
-				MediaType: mediaType,
-				Data:      imgData,
-			},
-		},
-		{
-			Type: "text",
-			Text: "This is the food I ate. Please analyze the calories and nutritional content.",
-		},
-	}
+	cs := model.StartChat()
+	cs.History = getHistory(userID)
 
-	addHistory(userID, "user", userContent)
-	msgs := getHistory(userID)
+	imgPart := genai.ImageData(mimeToExt(mediaType), imageBytes)
+	textPart := genai.Text("This is the food I ate. Please analyze the calories and nutritional content.")
 
-	reply, err := callClaude(msgs, buildSystemPrompt(knowledgeBase))
+	resp, err := cs.SendMessage(ctx, imgPart, textPart)
 	if err != nil {
-		log.Printf("Claude image error [%s]: %v", userID, err)
-		popHistory(userID)
+		log.Printf("Gemini image error [%s]: %v", userID, err)
 		return "Sorry, I could not analyze the image at this time. Please try again. 🙏", ""
 	}
 
-	// Replace the image message in history with a text placeholder to save memory.
-	popHistory(userID)
-	addHistory(userID, "user", "I sent a food image for analysis.")
-	addHistory(userID, "assistant", reply)
-
+	reply := responseText(resp)
 	calories := extractCalories(reply)
+
+	// Store text placeholder in history instead of raw image bytes (save memory)
+	addHistory(userID, &genai.Content{Role: "user", Parts: []genai.Part{genai.Text("I sent a food image for analysis.")}})
+	addHistory(userID, &genai.Content{Role: "model", Parts: []genai.Part{genai.Text(reply)}})
+
 	return reply, calories
 }
 
-// extractCalories attempts to parse a calorie estimate from the reply text.
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+func responseText(resp *genai.GenerateContentResponse) string {
+	for _, cand := range resp.Candidates {
+		if cand.Content != nil {
+			for _, part := range cand.Content.Parts {
+				if t, ok := part.(genai.Text); ok {
+					return string(t)
+				}
+			}
+		}
+	}
+	return "Sorry, I could not generate a response. Please try again."
+}
+
+func mimeToExt(mediaType string) string {
+	switch mediaType {
+	case "image/png":
+		return "png"
+	case "image/gif":
+		return "gif"
+	case "image/webp":
+		return "webp"
+	default:
+		return "jpeg"
+	}
+}
+
 func extractCalories(text string) string {
 	patterns := []string{
 		`(\d+[-–]\d+)\s*(?:kcal|cal)`,
