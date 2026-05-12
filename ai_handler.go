@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -14,13 +15,12 @@ import (
 )
 
 // Free-tier Gemini models — tried in order, first working one is used.
-// All models below are free via Google AI Studio (aistudio.google.com).
 var modelCandidates = []string{
-	"gemini-2.0-flash-lite", // best free tier: 30 RPM, 1500 RPD
-	"gemini-2.0-flash",      // 15 RPM, 1500 RPD free
-	"gemini-1.5-flash-8b",   // lightweight, 15 RPM free
-	"gemini-1.5-flash",      // 15 RPM free
-	"gemini-1.5-flash-latest",
+	"gemini-1.5-flash",
+	"gemini-1.5-flash-8b",
+	"gemini-1.5-pro",
+	"gemini-2.0-flash",
+	"gemini-2.0-flash-lite",
 }
 
 const maxHistory = 20
@@ -34,9 +34,17 @@ var (
 
 // InitGemini creates the Gemini client and auto-detects the best available model.
 func InitGemini() {
+	apiKey := os.Getenv("GEMINI_API_KEY")
+	if apiKey == "" {
+		log.Fatal("GEMINI_API_KEY is not set — please add it to your environment variables")
+	}
+	// Log first 8 chars for verification (never log full key)
+	masked := apiKey[:8] + "..." + apiKey[len(apiKey)-4:]
+	log.Printf("GEMINI_API_KEY found: %s", masked)
+
 	ctx := context.Background()
 	var err error
-	geminiClient, err = genai.NewClient(ctx, option.WithAPIKey(os.Getenv("GEMINI_API_KEY")))
+	geminiClient, err = genai.NewClient(ctx, option.WithAPIKey(apiKey))
 	if err != nil {
 		log.Fatalf("failed to create Gemini client: %v", err)
 	}
@@ -44,9 +52,9 @@ func InitGemini() {
 	// Auto-detect working model
 	activeModelName = detectWorkingModel(ctx)
 	if activeModelName == "" {
-		log.Fatal("no working Gemini model found — check your API key and quota")
+		log.Fatal("no working Gemini model found — check your API key and quota at aistudio.google.com")
 	}
-	log.Printf("Gemini ready using model: %s", activeModelName)
+	log.Printf("✅ Gemini ready using model: %s", activeModelName)
 }
 
 // detectWorkingModel tries each candidate and returns the first that responds.
@@ -155,6 +163,16 @@ func newModel(knowledgeBase string) *genai.GenerativeModel {
 
 // ── Retry helper ──────────────────────────────────────────────────────────────
 
+// isRateLimit checks if the error is a 429 rate-limit error worth retrying.
+func isRateLimit(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "429") ||
+		strings.Contains(err.Error(), "quota") ||
+		strings.Contains(err.Error(), "RESOURCE_EXHAUSTED")
+}
+
 func sendWithRetry(cs *genai.ChatSession, parts ...genai.Part) (*genai.GenerateContentResponse, error) {
 	ctx := context.Background()
 	var lastErr error
@@ -164,9 +182,14 @@ func sendWithRetry(cs *genai.ChatSession, parts ...genai.Part) (*genai.GenerateC
 			return resp, nil
 		}
 		lastErr = err
+		// Only retry on rate limit (429) — not on 404 or other errors
+		if !isRateLimit(err) {
+			log.Printf("Gemini non-retryable error: %v", err)
+			return nil, err
+		}
 		if attempt < 3 {
 			wait := time.Duration(attempt*3) * time.Second
-			log.Printf("Gemini error (attempt %d/3), retrying in %v: %v", attempt, wait, err)
+			log.Printf("Gemini rate limit (attempt %d/3), retrying in %v...", attempt, wait)
 			time.Sleep(wait)
 		}
 	}
