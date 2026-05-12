@@ -123,8 +123,9 @@ func newModel(knowledgeBase string) *genai.GenerativeModel {
 		Parts: []genai.Part{genai.Text(buildSystemPrompt(knowledgeBase))},
 	}
 	temp := float32(0.7)
+	maxTokens := int32(1024)
 	model.Temperature = &temp
-	model.MaxOutputTokens = 1024
+	model.MaxOutputTokens = &maxTokens
 	return model
 }
 
