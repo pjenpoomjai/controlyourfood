@@ -201,6 +201,18 @@ func handleImage(userID, replyToken, messageID string) {
 	replyText(replyToken, reply)
 }
 
+// ── Gemini test endpoint ──────────────────────────────────────────────────────
+
+func testGeminiHandler(w http.ResponseWriter, r *http.Request) {
+	reply := AskText("test-user", "Say 'FitBot is ready!' in Thai.", "")
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"model":  activeModelName,
+		"reply":  reply,
+		"status": "ok",
+	})
+}
+
 // ── Health check ──────────────────────────────────────────────────────────────
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
@@ -245,6 +257,7 @@ func main() {
 
 	// Register HTTP routes
 	http.HandleFunc("/webhook", webhookHandler)
+	http.HandleFunc("/test-gemini", testGeminiHandler)
 	http.HandleFunc("/", healthHandler)
 
 	port := os.Getenv("PORT")

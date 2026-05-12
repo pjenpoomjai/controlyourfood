@@ -13,16 +13,26 @@ import (
 	"google.golang.org/api/option"
 )
 
-const (
-	geminiModel = "gemini-1.5-flash"
-	maxHistory  = 20
-)
+// Free-tier Gemini models — tried in order, first working one is used.
+// All models below are free via Google AI Studio (aistudio.google.com).
+var modelCandidates = []string{
+	"gemini-2.0-flash-lite", // best free tier: 30 RPM, 1500 RPD
+	"gemini-2.0-flash",      // 15 RPM, 1500 RPD free
+	"gemini-1.5-flash-8b",   // lightweight, 15 RPM free
+	"gemini-1.5-flash",      // 15 RPM free
+	"gemini-1.5-flash-latest",
+}
+
+const maxHistory = 20
 
 // ── Gemini client ─────────────────────────────────────────────────────────────
 
-var geminiClient *genai.Client
+var (
+	geminiClient    *genai.Client
+	activeModelName string
+)
 
-// InitGemini creates the shared Gemini client. Call once at startup.
+// InitGemini creates the Gemini client and auto-detects the best available model.
 func InitGemini() {
 	ctx := context.Background()
 	var err error
@@ -30,7 +40,28 @@ func InitGemini() {
 	if err != nil {
 		log.Fatalf("failed to create Gemini client: %v", err)
 	}
-	log.Println("Gemini client initialized")
+
+	// Auto-detect working model
+	activeModelName = detectWorkingModel(ctx)
+	if activeModelName == "" {
+		log.Fatal("no working Gemini model found — check your API key and quota")
+	}
+	log.Printf("Gemini ready using model: %s", activeModelName)
+}
+
+// detectWorkingModel tries each candidate and returns the first that responds.
+func detectWorkingModel(ctx context.Context) string {
+	for _, name := range modelCandidates {
+		log.Printf("trying model: %s ...", name)
+		m := geminiClient.GenerativeModel(name)
+		_, err := m.GenerateContent(ctx, genai.Text("hi"))
+		if err == nil {
+			log.Printf("✅ model works: %s", name)
+			return name
+		}
+		log.Printf("❌ model %s failed: %v", name, err)
+	}
+	return ""
 }
 
 // ── Conversation history ──────────────────────────────────────────────────────
@@ -55,14 +86,6 @@ func addHistory(userID string, content *genai.Content) {
 	history[userID] = append(history[userID], content)
 	if len(history[userID]) > maxHistory {
 		history[userID] = history[userID][len(history[userID])-maxHistory:]
-	}
-}
-
-func popHistory(userID string) {
-	historyMu.Lock()
-	defer historyMu.Unlock()
-	if len(history[userID]) > 0 {
-		history[userID] = history[userID][:len(history[userID])-1]
 	}
 }
 
@@ -105,7 +128,7 @@ Use the following documents as your primary reference when answering questions:
 ## Image Analysis
 When receiving a food image:
 1. Identify all visible food items
-2. Estimate total calories (give a range, e.g. 350–450 kcal)
+2. Estimate total calories (give a range, e.g. 350-450 kcal)
 3. Summarize key macronutrients (protein, carbs, fat)
 4. Provide a brief tip
 5. Ask if the user wants to log this meal (reply "บันทึก" to save)
@@ -116,10 +139,10 @@ When receiving a food image:
 - Always mention that calorie estimates from images are approximate`, knowledgeSection)
 }
 
-// ── Shared model builder ──────────────────────────────────────────────────────
+// ── Model builder ─────────────────────────────────────────────────────────────
 
 func newModel(knowledgeBase string) *genai.GenerativeModel {
-	model := geminiClient.GenerativeModel(geminiModel)
+	model := geminiClient.GenerativeModel(activeModelName)
 	model.SystemInstruction = &genai.Content{
 		Parts: []genai.Part{genai.Text(buildSystemPrompt(knowledgeBase))},
 	}
@@ -130,9 +153,8 @@ func newModel(knowledgeBase string) *genai.GenerativeModel {
 	return model
 }
 
-// ── Public functions ──────────────────────────────────────────────────────────
+// ── Retry helper ──────────────────────────────────────────────────────────────
 
-// sendWithRetry sends a message and retries up to 3 times on 429 errors.
 func sendWithRetry(cs *genai.ChatSession, parts ...genai.Part) (*genai.GenerateContentResponse, error) {
 	ctx := context.Background()
 	var lastErr error
@@ -143,40 +165,37 @@ func sendWithRetry(cs *genai.ChatSession, parts ...genai.Part) (*genai.GenerateC
 		}
 		lastErr = err
 		if attempt < 3 {
-			wait := time.Duration(attempt*2) * time.Second
-			log.Printf("Gemini rate limit hit, retrying in %v (attempt %d/3)...", wait, attempt)
+			wait := time.Duration(attempt*3) * time.Second
+			log.Printf("Gemini error (attempt %d/3), retrying in %v: %v", attempt, wait, err)
 			time.Sleep(wait)
 		}
 	}
 	return nil, lastErr
 }
 
+// ── Public functions ──────────────────────────────────────────────────────────
+
 // AskText sends a text message to Gemini and returns the reply.
 func AskText(userID, message, knowledgeBase string) string {
 	model := newModel(knowledgeBase)
-
 	cs := model.StartChat()
 	cs.History = getHistory(userID)
 
 	resp, err := sendWithRetry(cs, genai.Text(message))
 	if err != nil {
 		log.Printf("Gemini text error [%s]: %v", userID, err)
-		return "Sorry, something went wrong. Please try again in a moment. 🙏"
+		return "ขออภัยค่ะ เกิดข้อผิดพลาด กรุณาลองใหม่อีกครั้ง 🙏"
 	}
 
 	reply := responseText(resp)
-
-	// Save both turns to history
 	addHistory(userID, &genai.Content{Role: "user", Parts: []genai.Part{genai.Text(message)}})
 	addHistory(userID, &genai.Content{Role: "model", Parts: []genai.Part{genai.Text(reply)}})
-
 	return reply
 }
 
 // AskImage sends a food image to Gemini and returns (reply, estimatedCalories).
 func AskImage(userID string, imageBytes []byte, mediaType, knowledgeBase string) (string, string) {
 	model := newModel(knowledgeBase)
-
 	cs := model.StartChat()
 	cs.History = getHistory(userID)
 
@@ -186,16 +205,14 @@ func AskImage(userID string, imageBytes []byte, mediaType, knowledgeBase string)
 	resp, err := sendWithRetry(cs, imgPart, textPart)
 	if err != nil {
 		log.Printf("Gemini image error [%s]: %v", userID, err)
-		return "Sorry, I could not analyze the image at this time. Please try again. 🙏", ""
+		return "ขออภัยค่ะ ไม่สามารถวิเคราะห์รูปได้ในขณะนี้ 🙏", ""
 	}
 
 	reply := responseText(resp)
 	calories := extractCalories(reply)
 
-	// Store text placeholder in history instead of raw image bytes (save memory)
 	addHistory(userID, &genai.Content{Role: "user", Parts: []genai.Part{genai.Text("I sent a food image for analysis.")}})
 	addHistory(userID, &genai.Content{Role: "model", Parts: []genai.Part{genai.Text(reply)}})
-
 	return reply, calories
 }
 
@@ -211,7 +228,7 @@ func responseText(resp *genai.GenerateContentResponse) string {
 			}
 		}
 	}
-	return "Sorry, I could not generate a response. Please try again."
+	return "ขออภัยค่ะ ไม่สามารถสร้างคำตอบได้ กรุณาลองใหม่อีกครั้ง"
 }
 
 func mimeToExt(mediaType string) string {
