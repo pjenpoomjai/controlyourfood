@@ -7,13 +7,14 @@ import (
 	"os"
 	"regexp"
 	"sync"
+	"time"
 
 	"github.com/google/generative-ai-go/genai"
 	"google.golang.org/api/option"
 )
 
 const (
-	geminiModel = "gemini-2.0-flash"
+	geminiModel = "gemini-1.5-flash"
 	maxHistory  = 20
 )
 
@@ -131,18 +132,36 @@ func newModel(knowledgeBase string) *genai.GenerativeModel {
 
 // ── Public functions ──────────────────────────────────────────────────────────
 
+// sendWithRetry sends a message and retries up to 3 times on 429 errors.
+func sendWithRetry(cs *genai.ChatSession, parts ...genai.Part) (*genai.GenerateContentResponse, error) {
+	ctx := context.Background()
+	var lastErr error
+	for attempt := 1; attempt <= 3; attempt++ {
+		resp, err := cs.SendMessage(ctx, parts...)
+		if err == nil {
+			return resp, nil
+		}
+		lastErr = err
+		if attempt < 3 {
+			wait := time.Duration(attempt*2) * time.Second
+			log.Printf("Gemini rate limit hit, retrying in %v (attempt %d/3)...", wait, attempt)
+			time.Sleep(wait)
+		}
+	}
+	return nil, lastErr
+}
+
 // AskText sends a text message to Gemini and returns the reply.
 func AskText(userID, message, knowledgeBase string) string {
-	ctx := context.Background()
 	model := newModel(knowledgeBase)
 
 	cs := model.StartChat()
 	cs.History = getHistory(userID)
 
-	resp, err := cs.SendMessage(ctx, genai.Text(message))
+	resp, err := sendWithRetry(cs, genai.Text(message))
 	if err != nil {
 		log.Printf("Gemini text error [%s]: %v", userID, err)
-		return "Sorry, something went wrong. Please try again. 🙏"
+		return "Sorry, something went wrong. Please try again in a moment. 🙏"
 	}
 
 	reply := responseText(resp)
@@ -156,7 +175,6 @@ func AskText(userID, message, knowledgeBase string) string {
 
 // AskImage sends a food image to Gemini and returns (reply, estimatedCalories).
 func AskImage(userID string, imageBytes []byte, mediaType, knowledgeBase string) (string, string) {
-	ctx := context.Background()
 	model := newModel(knowledgeBase)
 
 	cs := model.StartChat()
@@ -165,7 +183,7 @@ func AskImage(userID string, imageBytes []byte, mediaType, knowledgeBase string)
 	imgPart := genai.ImageData(mimeToExt(mediaType), imageBytes)
 	textPart := genai.Text("This is the food I ate. Please analyze the calories and nutritional content.")
 
-	resp, err := cs.SendMessage(ctx, imgPart, textPart)
+	resp, err := sendWithRetry(cs, imgPart, textPart)
 	if err != nil {
 		log.Printf("Gemini image error [%s]: %v", userID, err)
 		return "Sorry, I could not analyze the image at this time. Please try again. 🙏", ""
