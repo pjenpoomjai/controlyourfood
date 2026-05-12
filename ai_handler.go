@@ -16,11 +16,11 @@ import (
 
 // Free-tier Gemini models — tried in order, first working one is used.
 var modelCandidates = []string{
-	"gemini-1.5-flash",
-	"gemini-1.5-flash-8b",
-	"gemini-1.5-pro",
-	"gemini-2.0-flash",
-	"gemini-2.0-flash-lite",
+	"gemini-2.5-flash-preview-04-17", // Gemini 2.5 Flash (latest)
+	"gemini-2.5-flash",               // Gemini 2.5 Flash (stable alias)
+	"gemini-2.0-flash",               // fallback
+	"gemini-1.5-flash",               // fallback
+	"gemini-1.5-flash-8b",            // fallback
 }
 
 const maxHistory = 20
