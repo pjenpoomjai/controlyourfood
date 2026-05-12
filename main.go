@@ -7,7 +7,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"regexp"
 	"strings"
 	"sync"
 
@@ -194,8 +193,17 @@ func handleText(userID, replyToken, text string) {
 		}
 	}
 
-	// Auto-save profile info if user shares personal data
-	go SaveUserProfileFromText(userID, getUserName(userID), trimmed)
+	// Auto-extract and save profile info using AI (runs in background)
+	go func() {
+		extracted := ExtractProfileFromMessage(userID, trimmed)
+		if extracted != nil {
+			if extracted.Name == "" {
+				extracted.Name = getUserName(userID)
+			}
+			GetSheets().SaveUserProfile(extracted)
+			log.Printf("profile auto-saved for user: %s", userID)
+		}
+	}()
 
 	// Send to Gemini
 	reply := AskText(userID, trimmed, knowledgeBase)
@@ -247,39 +255,6 @@ func formatProfile(p *UserProfile) string {
 	return lines
 }
 
-// SaveUserProfileFromText parses profile info from free text and saves it.
-func SaveUserProfileFromText(userID, username, text string) {
-	sm := GetSheets()
-	if !sm.IsConnected() {
-		return
-	}
-	p := sm.GetUserProfile(userID)
-	if p.Name == "" {
-		p.Name = username
-	}
-	p.UserID = userID
-
-	lower := strings.ToLower(text)
-
-	// Weight
-	weightRe := regexp.MustCompile(`(?i)(?:weight|น้ำหนัก)[:\s]*(\d+(?:\.\d+)?)\s*(?:kg|กก|กิโล)?`)
-	if m := weightRe.FindStringSubmatch(lower); len(m) > 1 { p.Weight = m[1] }
-
-	// Height
-	heightRe := regexp.MustCompile(`(?i)(?:height|ส่วนสูง)[:\s]*(\d+(?:\.\d+)?)\s*(?:cm|ซม|เซน)?`)
-	if m := heightRe.FindStringSubmatch(lower); len(m) > 1 { p.Height = m[1] }
-
-	// Daily calories
-	calRe := regexp.MustCompile(`(?i)(?:calorie|แคลอรี่|kcal)[^0-9]*(\d+)`)
-	if m := calRe.FindStringSubmatch(lower); len(m) > 1 { p.DailyCalories = m[1] }
-
-	// Goal keywords
-	if containsAny(lower, []string{"lose weight", "ลดน้ำหนัก", "ลดความอ้วน"}) { p.Goal = "Lose weight" }
-	if containsAny(lower, []string{"maintain", "คงน้ำหนัก", "รักษาน้ำหนัก"}) { p.Goal = "Maintain weight" }
-	if containsAny(lower, []string{"gain muscle", "เพิ่มกล้ามเนื้อ", "bulk"}) { p.Goal = "Gain muscle" }
-
-	sm.SaveUserProfile(p)
-}
 
 // ── Gemini test endpoint ──────────────────────────────────────────────────────
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -293,6 +294,82 @@ func mimeToExt(mediaType string) string {
 	default:
 		return "jpeg"
 	}
+}
+
+// ExtractProfileFromMessage uses Gemini to extract profile info from a user message.
+func ExtractProfileFromMessage(userID, message string) *UserProfile {
+	if geminiClient == nil {
+		return nil
+	}
+	ctx := context.Background()
+	model := geminiClient.GenerativeModel(activeModelName)
+	temp := float32(0.1)
+	model.Temperature = &temp
+
+	prompt := fmt.Sprintf(`Extract personal health/diet info from this message. Return JSON only, no explanation.
+If nothing relevant, return: {}
+
+Message: "%s"
+
+JSON fields (leave blank if not mentioned):
+{
+  "name": "",
+  "weight_kg": "",
+  "height_cm": "",
+  "goal": "",
+  "daily_calories": "",
+  "restrictions": "",
+  "notes": ""
+}
+
+goal must be one of: "Lose weight", "Maintain weight", "Gain muscle", or blank.`, message)
+
+	resp, err := model.GenerateContent(ctx, genai.Text(prompt))
+	if err != nil {
+		log.Printf("profile extraction error: %v", err)
+		return nil
+	}
+
+	raw := responseText(resp)
+	raw = strings.TrimSpace(raw)
+	raw = strings.TrimPrefix(raw, "```json")
+	raw = strings.TrimPrefix(raw, "```")
+	raw = strings.TrimSuffix(raw, "```")
+	raw = strings.TrimSpace(raw)
+
+	if raw == "{}" || raw == "" {
+		return nil
+	}
+
+	var data map[string]string
+	if err := json.Unmarshal([]byte(raw), &data); err != nil {
+		log.Printf("profile JSON parse error: %v (raw: %s)", err, raw)
+		return nil
+	}
+
+	hasData := false
+	for _, v := range data {
+		if strings.TrimSpace(v) != "" {
+			hasData = true
+			break
+		}
+	}
+	if !hasData {
+		return nil
+	}
+
+	existing := GetSheets().GetUserProfile(userID)
+	// Merge — only overwrite non-empty fields
+	if v := strings.TrimSpace(data["name"]); v != "" { existing.Name = v }
+	if v := strings.TrimSpace(data["weight_kg"]); v != "" { existing.Weight = v }
+	if v := strings.TrimSpace(data["height_cm"]); v != "" { existing.Height = v }
+	if v := strings.TrimSpace(data["goal"]); v != "" { existing.Goal = v }
+	if v := strings.TrimSpace(data["daily_calories"]); v != "" { existing.DailyCalories = v }
+	if v := strings.TrimSpace(data["restrictions"]); v != "" { existing.Restrictions = v }
+	if v := strings.TrimSpace(data["notes"]); v != "" { existing.Notes = v }
+
+	log.Printf("extracted profile for %s: weight=%s height=%s goal=%s", userID, existing.Weight, existing.Height, existing.Goal)
+	return existing
 }
 
 func extractCalories(text string) string {
