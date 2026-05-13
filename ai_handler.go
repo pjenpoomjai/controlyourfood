@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -15,10 +16,25 @@ import (
 )
 
 const (
-	textModel   = "llama-3.3-70b-versatile"      // best Thai + nutrition understanding
-	visionModel = "llama-3.2-11b-vision-preview"  // for food image analysis
-	maxHistory  = 20
+	audioModel = "whisper-large-v3-turbo"  // fast Thai speech-to-text
+	maxHistory = 20
 )
+
+// textModels are tried in order — if the first hits quota (429), the next is used.
+// Each model has its own 14,400 req/day quota on Groq free tier.
+var textModels = []string{
+	"llama-3.3-70b-versatile",  // best quality
+	"llama-3.1-70b-versatile",  // same size, separate quota
+	"mixtral-8x7b-32768",       // strong multilingual
+	"llama-3.1-8b-instant",     // fastest fallback
+	"gemma2-9b-it",             // last resort
+}
+
+// visionModels fallback list for image analysis.
+var visionModels = []string{
+	"llama-3.2-11b-vision-preview",
+	"llama-3.2-90b-vision-preview",
+}
 
 // ── Groq client ───────────────────────────────────────────────────────────────
 
@@ -137,25 +153,59 @@ Remember: THAI LANGUAGE ONLY. Keep responses SHORT and CONCISE.`,
 
 // ── API call helpers ──────────────────────────────────────────────────────────
 
-func callGroq(model, systemPrompt string, messages []openai.ChatCompletionMessage) (string, error) {
+// isQuotaError returns true when Groq responds with 429 (rate limit / quota).
+func isQuotaError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "429") ||
+		strings.Contains(s, "rate_limit") ||
+		strings.Contains(s, "quota")
+}
+
+// callGroqWithFallback tries each model in the list until one succeeds.
+func callGroqWithFallback(models []string, systemPrompt string, messages []openai.ChatCompletionMessage) (string, error) {
 	ctx := context.Background()
 
 	allMessages := append([]openai.ChatCompletionMessage{
 		{Role: openai.ChatMessageRoleSystem, Content: systemPrompt},
 	}, messages...)
 
-	resp, err := groqClient.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
-		Model:     model,
-		Messages:  allMessages,
-		MaxTokens: 400,
-	})
-	if err != nil {
-		return "", err
+	for i, model := range models {
+		resp, err := groqClient.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
+			Model:     model,
+			Messages:  allMessages,
+			MaxTokens: 400,
+		})
+		if err != nil {
+			if isQuotaError(err) && i < len(models)-1 {
+				log.Printf("quota hit on %s, switching to %s", model, models[i+1])
+				continue
+			}
+			return "", err
+		}
+		if len(resp.Choices) == 0 {
+			return "", fmt.Errorf("empty response from Groq")
+		}
+		if i > 0 {
+			log.Printf("used fallback model: %s", model)
+		}
+		return resp.Choices[0].Message.Content, nil
 	}
-	if len(resp.Choices) == 0 {
-		return "", fmt.Errorf("empty response from Groq")
+	return "", fmt.Errorf("all models exhausted quota")
+}
+
+// callGroq tries a specific model first, then falls back to the list.
+func callGroq(model, systemPrompt string, messages []openai.ChatCompletionMessage) (string, error) {
+	// Build list: requested model first, then remaining fallbacks
+	list := []string{model}
+	for _, m := range textModels {
+		if m != model {
+			list = append(list, m)
+		}
 	}
-	return resp.Choices[0].Message.Content, nil
+	return callGroqWithFallback(list, systemPrompt, messages)
 }
 
 // ── Public functions ──────────────────────────────────────────────────────────
@@ -171,10 +221,10 @@ func AskText(userID, message, knowledgeBase string) string {
 		Content: message,
 	})
 
-	reply, err := callGroq(textModel, system, msgs)
+	reply, err := callGroqWithFallback(textModels, system, msgs)
 	if err != nil {
 		log.Printf("Groq text error [%s]: %v", userID, err)
-		return "ขออภัยค่ะ เกิดข้อผิดพลาด กรุณาลองใหม่อีกครั้ง 🙏"
+		return "ขออภัยค่ะ ระบบ AI ถึง quota แล้วค่ะ กรุณาลองใหม่ในอีกสักครู่ 🙏"
 	}
 
 	addHistory(userID, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: message})
@@ -212,19 +262,25 @@ func AskImage(userID string, imageBytes []byte, mediaType, knowledgeBase string)
 		{Role: openai.ChatMessageRoleSystem, Content: system},
 	}, msgs...)
 
-	resp, err := groqClient.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
-		Model:     visionModel,
-		Messages:  allMessages,
-		MaxTokens: 1024,
-	})
-	if err != nil {
-		log.Printf("Groq vision error [%s]: %v", userID, err)
-		return "ขออภัยค่ะ ไม่สามารถวิเคราะห์รูปได้ในขณะนี้ 🙏", ""
-	}
-
 	reply := ""
-	if len(resp.Choices) > 0 {
-		reply = resp.Choices[0].Message.Content
+	for i, vm := range visionModels {
+		resp, err := groqClient.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
+			Model:     vm,
+			Messages:  allMessages,
+			MaxTokens: 400,
+		})
+		if err != nil {
+			if isQuotaError(err) && i < len(visionModels)-1 {
+				log.Printf("vision quota hit on %s, trying %s", vm, visionModels[i+1])
+				continue
+			}
+			log.Printf("Groq vision error [%s]: %v", userID, err)
+			return "ขออภัยค่ะ ไม่สามารถวิเคราะห์รูปได้ในขณะนี้ 🙏", ""
+		}
+		if len(resp.Choices) > 0 {
+			reply = resp.Choices[0].Message.Content
+		}
+		break
 	}
 
 	// Store text placeholder in history (not raw image bytes)
@@ -402,4 +458,20 @@ func extractCalories(text string) string {
 		}
 	}
 	return ""
+}
+
+// TranscribeAudio converts LINE audio (M4A) to text using Groq Whisper.
+func TranscribeAudio(audioBytes []byte) (string, error) {
+	ctx := context.Background()
+	resp, err := groqClient.CreateTranscription(ctx, openai.AudioRequest{
+		Model:    audioModel,
+		FilePath: "audio.m4a", // extension tells Groq the format
+		Reader:   bytes.NewReader(audioBytes),
+		Language: "th",
+		Format:   openai.AudioResponseFormatText,
+	})
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(resp.Text), nil
 }

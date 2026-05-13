@@ -72,6 +72,8 @@ func webhookHandler(w http.ResponseWriter, r *http.Request) {
 			handleText(userID, replyToken, msg.Text)
 		case *linebot.ImageMessage:
 			handleImage(userID, replyToken, msg.ID)
+		case *linebot.AudioMessage:
+			handleAudio(userID, replyToken, msg.ID)
 		}
 	}
 
@@ -211,6 +213,44 @@ func handleImage(userID, replyToken, messageID string) {
 	}
 
 	replyText(replyToken, reply)
+}
+
+// ── Audio message handler ─────────────────────────────────────────────────────
+
+func handleAudio(userID, replyToken, messageID string) {
+	content, err := bot.GetMessageContent(messageID).Do()
+	if err != nil {
+		log.Printf("failed to download audio [%s]: %v", userID, err)
+		replyText(replyToken, "ขออภัยค่ะ ไม่สามารถดาวน์โหลดเสียงได้ 🙏")
+		return
+	}
+	defer content.Content.Close()
+
+	audioBytes, err := io.ReadAll(content.Content)
+	if err != nil {
+		log.Printf("failed to read audio [%s]: %v", userID, err)
+		replyText(replyToken, "ขออภัยค่ะ ไม่สามารถประมวลผลเสียงได้ 🙏")
+		return
+	}
+
+	// Transcribe audio → text via Groq Whisper
+	text, err := TranscribeAudio(audioBytes)
+	if err != nil {
+		log.Printf("transcription error [%s]: %v", userID, err)
+		replyText(replyToken, "ขออภัยค่ะ ถอดเสียงไม่สำเร็จ ลองพิมพ์แทนได้เลยนะคะ 🙏")
+		return
+	}
+	if text == "" {
+		replyText(replyToken, "ขออภัยค่ะ ไม่ได้ยินเสียงชัดเจน กรุณาลองใหม่อีกครั้งนะคะ 🎙️")
+		return
+	}
+
+	log.Printf("audio transcribed [%s]: %s", userID, text)
+
+	// Process transcribed text exactly like a normal text message
+	// Prepend the transcript so user knows what was heard
+	reply := AskText(userID, text, knowledgeBase)
+	replyText(replyToken, "🎙️ ได้ยิน: "+text+"\n\n"+reply)
 }
 
 // ── Profile helpers ───────────────────────────────────────────────────────────
