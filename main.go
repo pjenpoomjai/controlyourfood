@@ -137,30 +137,46 @@ func handleText(userID, replyToken, text string) {
 		return
 	}
 
-	// Auto-extract profile info and detect meal logs — both run in background
+	// Send to AI and reply
+	reply := AskText(userID, trimmed, knowledgeBase)
+	replyText(replyToken, reply)
+
+	// Background: update profile + detect meal + learn from conversation
 	go func() {
-		// Save profile data if mentioned
+		sm := GetSheets()
+
+		// Save profile (new info or re-save existing)
 		extracted := ExtractProfileFromMessage(userID, trimmed)
 		if extracted != nil {
 			if extracted.Name == "" {
 				extracted.Name = getUserName(userID)
 			}
-			GetSheets().SaveUserProfile(extracted)
-			log.Printf("profile auto-saved for user: %s", userID)
+			sm.SaveUserProfile(extracted)
+		} else {
+			existing := sm.GetUserProfile(userID)
+			if existing.Name == "" {
+				existing.Name = getUserName(userID)
+			}
+			if existing.Name != "" || existing.Weight != "" || existing.Goal != "" {
+				sm.SaveUserProfile(existing)
+			}
 		}
 
-		// Auto-detect and save meal if user is reporting what they ate
+		// Auto-detect and save meal
 		food, calories := DetectMealFromText(trimmed)
 		if food != "" {
 			username := getUserName(userID)
-			GetSheets().LogMeal(userID, username, food, calories)
+			sm.LogMeal(userID, username, food, calories)
 			log.Printf("meal auto-logged for %s: %s (%s kcal)", userID, food, calories)
 		}
-	}()
 
-	// Send to AI and reply
-	reply := AskText(userID, trimmed, knowledgeBase)
-	replyText(replyToken, reply)
+		// Extract and save new knowledge from this Q&A pair
+		topic, knowledge := ExtractAndLearn(trimmed, reply)
+		if topic != "" {
+			sm.SaveLearned(topic, knowledge, userID)
+			log.Printf("learned: [%s] %s", topic, knowledge)
+		}
+	}()
 }
 
 // ── Image message handler ─────────────────────────────────────────────────────
@@ -268,8 +284,12 @@ func main() {
 	// Initialize Groq AI client
 	InitGroq()
 
-	// Initialize Google Sheets
-	GetSheets()
+	// Initialize Google Sheets + load accumulated learned knowledge
+	sm := GetSheets()
+	if learned := sm.LoadLearnedKnowledge(); learned != "" {
+		knowledgeBase += "\n\n" + learned
+		log.Printf("loaded learned knowledge from Sheets: %d entries", strings.Count(learned, "\n-"))
+	}
 
 	// Register HTTP routes
 	http.HandleFunc("/webhook", webhookHandler)

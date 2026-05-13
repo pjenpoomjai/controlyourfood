@@ -342,6 +342,52 @@ Message: "%s"`, message)
 	return strings.TrimSpace(data.Food), strings.TrimSpace(data.Calories)
 }
 
+// ExtractAndLearn extracts useful nutritional knowledge from a Q&A pair and
+// returns (topic, knowledge) if something worth saving was found.
+func ExtractAndLearn(userMessage, botReply string) (string, string) {
+	if groqClient == nil {
+		return "", ""
+	}
+
+	prompt := fmt.Sprintf(`Did this conversation contain any specific, reusable nutritional fact worth remembering?
+Examples worth saving: calorie counts of specific foods, nutrition tips, Thai food data, dietary advice.
+Examples NOT worth saving: greetings, general chat, profile updates, meal logs.
+
+Return JSON only: {"topic":"","knowledge":"","should_save":false}
+- topic: short category in Thai (e.g. "แคลอรี่อาหาร", "เคล็ดลับลดน้ำหนัก")
+- knowledge: the specific fact in Thai, 1 concise sentence
+- should_save: true only if there is a clear, reusable nutritional fact
+
+User: "%s"
+Bot: "%s"`, userMessage, botReply)
+
+	reply, err := callGroq(textModel, "", []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleUser, Content: prompt},
+	})
+	if err != nil {
+		return "", ""
+	}
+
+	raw := strings.TrimSpace(reply)
+	raw = strings.TrimPrefix(raw, "```json")
+	raw = strings.TrimPrefix(raw, "```")
+	raw = strings.TrimSuffix(raw, "```")
+	raw = strings.TrimSpace(raw)
+
+	var data struct {
+		Topic      string `json:"topic"`
+		Knowledge  string `json:"knowledge"`
+		ShouldSave bool   `json:"should_save"`
+	}
+	if err := json.Unmarshal([]byte(raw), &data); err != nil {
+		return "", ""
+	}
+	if !data.ShouldSave || data.Topic == "" || data.Knowledge == "" {
+		return "", ""
+	}
+	return strings.TrimSpace(data.Topic), strings.TrimSpace(data.Knowledge)
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 func extractCalories(text string) string {

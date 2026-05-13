@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/oauth2/google"
@@ -16,6 +17,27 @@ import (
 var sheetHeaders = []interface{}{"Date", "Time", "User ID", "Username", "Food", "Calories (kcal)", "Notes"}
 
 var profileHeaders = []interface{}{"User ID", "Name", "Weight (kg)", "Height (cm)", "Goal", "Daily Calories", "Restrictions", "Notes", "Last Updated"}
+
+// ── In-memory profile cache ───────────────────────────────────────────────────
+// Prevents repeated Sheets API calls and survives transient connection errors.
+
+var (
+	profileCacheMu sync.RWMutex
+	profileCache   = make(map[string]*UserProfile)
+)
+
+func cacheGet(userID string) (*UserProfile, bool) {
+	profileCacheMu.RLock()
+	defer profileCacheMu.RUnlock()
+	p, ok := profileCache[userID]
+	return p, ok
+}
+
+func cacheSet(p *UserProfile) {
+	profileCacheMu.Lock()
+	defer profileCacheMu.Unlock()
+	profileCache[p.UserID] = p
+}
 
 // UserProfile holds persistent information about a user.
 type UserProfile struct {
@@ -87,6 +109,7 @@ func newSheetsManager() *SheetsManager {
 
 	sm.ensureSheet()
 	sm.ensureProfileSheet()
+	sm.ensureKnowledgeSheet()
 	log.Println("Google Sheets connected successfully")
 	return sm
 }
@@ -173,15 +196,28 @@ func (sm *SheetsManager) ensureProfileSheet() {
 	log.Println("created 'User Profiles' sheet")
 }
 
-// GetUserProfile retrieves the profile for a user, or returns an empty profile.
+// GetUserProfile retrieves the profile for a user.
+// Returns from in-memory cache if available; otherwise loads from Sheets and caches it.
 func (sm *SheetsManager) GetUserProfile(userID string) *UserProfile {
+	// 1. Check memory cache first (fast path — no Sheets API call)
+	if p, ok := cacheGet(userID); ok {
+		return p
+	}
+
+	// 2. Load from Sheets
+	empty := &UserProfile{UserID: userID}
 	if !sm.IsConnected() {
-		return &UserProfile{UserID: userID}
+		cacheSet(empty)
+		return empty
 	}
+
 	resp, err := sm.srv.Spreadsheets.Values.Get(sm.spreadsheetID, "User Profiles!A:I").Do()
-	if err != nil || len(resp.Values) < 2 {
-		return &UserProfile{UserID: userID}
+	if err != nil {
+		log.Printf("GetUserProfile: sheets error for %s: %v", userID, err)
+		cacheSet(empty)
+		return empty
 	}
+
 	for _, row := range resp.Values[1:] {
 		if len(row) > 0 && fmt.Sprint(row[0]) == userID {
 			p := &UserProfile{UserID: userID}
@@ -192,18 +228,30 @@ func (sm *SheetsManager) GetUserProfile(userID string) *UserProfile {
 			if len(row) > 5 { p.DailyCalories = fmt.Sprint(row[5]) }
 			if len(row) > 6 { p.Restrictions = fmt.Sprint(row[6]) }
 			if len(row) > 7 { p.Notes = fmt.Sprint(row[7]) }
+			if len(row) > 8 { p.UpdatedAt = fmt.Sprint(row[8]) }
+			log.Printf("GetUserProfile: loaded from Sheets for %s (name=%s)", userID, p.Name)
+			cacheSet(p)
 			return p
 		}
 	}
-	return &UserProfile{UserID: userID}
+
+	log.Printf("GetUserProfile: no profile found in Sheets for %s", userID)
+	cacheSet(empty)
+	return empty
 }
 
 // SaveUserProfile creates or updates a user's profile row.
+// Updates the in-memory cache immediately, then writes to Sheets.
 func (sm *SheetsManager) SaveUserProfile(p *UserProfile) bool {
+	// Always update cache immediately so in-session reads are instant
+	p.UpdatedAt = time.Now().Format("2006-01-02 15:04:05")
+	cacheSet(p)
+
 	if !sm.IsConnected() {
+		log.Printf("SaveUserProfile: Sheets not connected, saved to cache only for %s", p.UserID)
 		return false
 	}
-	p.UpdatedAt = time.Now().Format("2006-01-02 15:04:05")
+
 	newRow := []interface{}{
 		p.UserID, p.Name, p.Weight, p.Height,
 		p.Goal, p.DailyCalories, p.Restrictions, p.Notes, p.UpdatedAt,
@@ -220,10 +268,10 @@ func (sm *SheetsManager) SaveUserProfile(p *UserProfile) bool {
 				_, err = sm.srv.Spreadsheets.Values.Update(sm.spreadsheetID, rangeStr, vr).
 					ValueInputOption("USER_ENTERED").Do()
 				if err != nil {
-					log.Printf("failed to update profile: %v", err)
+					log.Printf("SaveUserProfile: update failed for %s: %v", p.UserID, err)
 					return false
 				}
-				log.Printf("updated profile for user: %s", p.UserID)
+				log.Printf("SaveUserProfile: updated Sheets for %s (name=%s weight=%s)", p.UserID, p.Name, p.Weight)
 				return true
 			}
 		}
@@ -235,10 +283,10 @@ func (sm *SheetsManager) SaveUserProfile(p *UserProfile) bool {
 		Append(sm.spreadsheetID, "User Profiles", vr).
 		ValueInputOption("USER_ENTERED").Do()
 	if err != nil {
-		log.Printf("failed to save profile: %v", err)
+		log.Printf("SaveUserProfile: append failed for %s: %v", p.UserID, err)
 		return false
 	}
-	log.Printf("created profile for user: %s", p.UserID)
+	log.Printf("SaveUserProfile: created new row in Sheets for %s", p.UserID)
 	return true
 }
 
@@ -310,6 +358,86 @@ func (sm *SheetsManager) GetUserHistory(userID string, limit int) []map[string]s
 		userRows = userRows[len(userRows)-limit:]
 	}
 	return userRows
+}
+
+// ── Learned Knowledge ────────────────────────────────────────────────────────
+
+// ensureKnowledgeSheet creates the "Learned Knowledge" sheet if it doesn't exist.
+func (sm *SheetsManager) ensureKnowledgeSheet() {
+	if !sm.IsConnected() {
+		return
+	}
+	ss, err := sm.srv.Spreadsheets.Get(sm.spreadsheetID).Do()
+	if err != nil {
+		return
+	}
+	for _, s := range ss.Sheets {
+		if s.Properties.Title == "Learned Knowledge" {
+			return
+		}
+	}
+	req := &sheets.BatchUpdateSpreadsheetRequest{
+		Requests: []*sheets.Request{
+			{AddSheet: &sheets.AddSheetRequest{
+				Properties: &sheets.SheetProperties{Title: "Learned Knowledge"},
+			}},
+		},
+	}
+	if _, err = sm.srv.Spreadsheets.BatchUpdate(sm.spreadsheetID, req).Do(); err != nil {
+		return
+	}
+	headers := &sheets.ValueRange{Values: [][]interface{}{{"Date", "Topic", "Knowledge", "Source UserID"}}}
+	_, _ = sm.srv.Spreadsheets.Values.
+		Append(sm.spreadsheetID, "Learned Knowledge", headers).
+		ValueInputOption("USER_ENTERED").Do()
+	log.Println("created 'Learned Knowledge' sheet")
+}
+
+// SaveLearned appends a new knowledge entry to the Learned Knowledge sheet.
+func (sm *SheetsManager) SaveLearned(topic, knowledge, sourceUserID string) bool {
+	if !sm.IsConnected() {
+		return false
+	}
+	row := &sheets.ValueRange{Values: [][]interface{}{{
+		time.Now().Format("2006-01-02 15:04:05"),
+		topic,
+		knowledge,
+		sourceUserID,
+	}}}
+	_, err := sm.srv.Spreadsheets.Values.
+		Append(sm.spreadsheetID, "Learned Knowledge", row).
+		ValueInputOption("USER_ENTERED").Do()
+	if err != nil {
+		log.Printf("SaveLearned: failed: %v", err)
+		return false
+	}
+	log.Printf("SaveLearned: saved topic=%s", topic)
+	return true
+}
+
+// LoadLearnedKnowledge returns all learned knowledge as a single string for the knowledge base.
+func (sm *SheetsManager) LoadLearnedKnowledge() string {
+	if !sm.IsConnected() {
+		return ""
+	}
+	resp, err := sm.srv.Spreadsheets.Values.Get(sm.spreadsheetID, "Learned Knowledge!A:D").Do()
+	if err != nil || len(resp.Values) < 2 {
+		return ""
+	}
+	var lines []string
+	for _, row := range resp.Values[1:] {
+		if len(row) >= 3 {
+			topic := fmt.Sprint(row[1])
+			knowledge := fmt.Sprint(row[2])
+			if topic != "" && knowledge != "" {
+				lines = append(lines, fmt.Sprintf("- [%s] %s", topic, knowledge))
+			}
+		}
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	return "## ความรู้ที่สะสมจากการสนทนา\n" + strings.Join(lines, "\n")
 }
 
 // FormatHistory formats meal records into a readable string.
