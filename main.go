@@ -285,8 +285,8 @@ func testGroqHandler(w http.ResponseWriter, r *http.Request) {
 	reply := AskText("test-user", "Say 'FitBot is ready!' in Thai.", "")
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{
-		"text_model":   textModel,
-		"vision_model": visionModel,
+		"text_model":   textModels[0],
+		"vision_model": visionModels[0],
 		"reply":        reply,
 		"status":       "ok",
 	})
