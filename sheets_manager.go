@@ -18,6 +18,8 @@ var sheetHeaders = []interface{}{"Date", "Time", "User ID", "Username", "Food", 
 
 var profileHeaders = []interface{}{"User ID", "Name", "Weight (kg)", "Height (cm)", "Goal", "Daily Calories", "Restrictions", "Notes", "Last Updated"}
 
+var usageHeaders = []interface{}{"Date", "Time", "User ID", "Model", "Type", "Question", "Prompt Tokens", "Completion Tokens", "Total Tokens"}
+
 // ── In-memory profile cache ───────────────────────────────────────────────────
 // Prevents repeated Sheets API calls and survives transient connection errors.
 
@@ -110,6 +112,7 @@ func newSheetsManager() *SheetsManager {
 	sm.ensureSheet()
 	sm.ensureProfileSheet()
 	sm.ensureKnowledgeSheet()
+	sm.ensureUsageSheet()
 	log.Println("Google Sheets connected successfully")
 	return sm
 }
@@ -438,6 +441,154 @@ func (sm *SheetsManager) LoadLearnedKnowledge() string {
 		return ""
 	}
 	return "## ความรู้ที่สะสมจากการสนทนา\n" + strings.Join(lines, "\n")
+}
+
+// ── Usage Log ────────────────────────────────────────────────────────────────
+
+// ensureUsageSheet creates the "Usage Log" sheet if it doesn't exist.
+func (sm *SheetsManager) ensureUsageSheet() {
+	if !sm.IsConnected() {
+		return
+	}
+	ss, err := sm.srv.Spreadsheets.Get(sm.spreadsheetID).Do()
+	if err != nil {
+		return
+	}
+	for _, s := range ss.Sheets {
+		if s.Properties.Title == "Usage Log" {
+			return
+		}
+	}
+	req := &sheets.BatchUpdateSpreadsheetRequest{
+		Requests: []*sheets.Request{
+			{AddSheet: &sheets.AddSheetRequest{
+				Properties: &sheets.SheetProperties{Title: "Usage Log"},
+			}},
+		},
+	}
+	if _, err = sm.srv.Spreadsheets.BatchUpdate(sm.spreadsheetID, req).Do(); err != nil {
+		log.Printf("failed to create Usage Log sheet: %v", err)
+		return
+	}
+	vr := &sheets.ValueRange{Values: [][]interface{}{usageHeaders}}
+	_, _ = sm.srv.Spreadsheets.Values.
+		Append(sm.spreadsheetID, "Usage Log", vr).
+		ValueInputOption("USER_ENTERED").Do()
+	log.Println("created 'Usage Log' sheet")
+}
+
+// LogTokenUsage records a single API call with token counts.
+func (sm *SheetsManager) LogTokenUsage(userID, model, callType, question string, promptTokens, completionTokens, totalTokens int) {
+	if !sm.IsConnected() {
+		return
+	}
+	// Truncate question to 120 chars to keep the sheet readable
+	q := []rune(question)
+	if len(q) > 120 {
+		question = string(q[:120]) + "…"
+	}
+	now := time.Now()
+	row := &sheets.ValueRange{Values: [][]interface{}{{
+		now.Format("2006-01-02"),
+		now.Format("15:04:05"),
+		userID,
+		model,
+		callType,
+		question,
+		promptTokens,
+		completionTokens,
+		totalTokens,
+	}}}
+	_, err := sm.srv.Spreadsheets.Values.
+		Append(sm.spreadsheetID, "Usage Log", row).
+		ValueInputOption("USER_ENTERED").Do()
+	if err != nil {
+		log.Printf("LogTokenUsage: failed: %v", err)
+	}
+}
+
+// GetDailyStats returns a formatted string showing today's token usage for a user.
+func (sm *SheetsManager) GetDailyStats(userID string) string {
+	if !sm.IsConnected() {
+		return "⚠️ ไม่สามารถเชื่อมต่อ Sheets ได้ค่ะ"
+	}
+	resp, err := sm.srv.Spreadsheets.Values.Get(sm.spreadsheetID, "Usage Log!A:I").Do()
+	if err != nil || len(resp.Values) < 2 {
+		return "📊 ยังไม่มีข้อมูลการใช้งานค่ะ"
+	}
+
+	today := time.Now().Format("2006-01-02")
+	var totalPrompt, totalCompletion, totalAll int
+	var calls []string
+	modelCount := make(map[string]int)
+
+	for _, row := range resp.Values[1:] {
+		if len(row) < 9 {
+			continue
+		}
+		date := fmt.Sprint(row[0])
+		uid := fmt.Sprint(row[2])
+		if date != today || uid != userID {
+			continue
+		}
+		model := fmt.Sprint(row[3])
+		callType := fmt.Sprint(row[4])
+		question := fmt.Sprint(row[5])
+		pt := toInt(fmt.Sprint(row[6]))
+		ct := toInt(fmt.Sprint(row[7]))
+		tt := toInt(fmt.Sprint(row[8]))
+
+		totalPrompt += pt
+		totalCompletion += ct
+		totalAll += tt
+		modelCount[model]++
+
+		if callType == "text" || callType == "image" || callType == "audio" {
+			q := []rune(question)
+			if len(q) > 40 {
+				question = string(q[:40]) + "…"
+			}
+			calls = append(calls, fmt.Sprintf("  • [%s] %s (%d tok)", callType, question, tt))
+		}
+	}
+
+	if totalAll == 0 {
+		return "📊 วันนี้ยังไม่มีการใช้งานค่ะ"
+	}
+
+	// Model breakdown
+	var modelLines []string
+	for m, cnt := range modelCount {
+		short := m
+		if len(m) > 20 {
+			short = m[:20] + "…"
+		}
+		modelLines = append(modelLines, fmt.Sprintf("  • %s ×%d", short, cnt))
+	}
+
+	lines := fmt.Sprintf("📊 สรุปการใช้งานวันนี้ (%s)\n\n", today)
+	lines += fmt.Sprintf("🔢 Token ที่ใช้ทั้งหมด: %d\n", totalAll)
+	lines += fmt.Sprintf("  ↳ Prompt: %d | Completion: %d\n\n", totalPrompt, totalCompletion)
+	lines += "🤖 Models ที่ใช้:\n" + strings.Join(modelLines, "\n") + "\n\n"
+
+	if len(calls) > 0 {
+		// Show last 10 user calls
+		start := 0
+		if len(calls) > 10 {
+			start = len(calls) - 10
+		}
+		lines += fmt.Sprintf("💬 คำถามล่าสุด (%d รายการ):\n", len(calls))
+		lines += strings.Join(calls[start:], "\n")
+	}
+
+	return lines
+}
+
+// toInt converts a string to int, returns 0 on error.
+func toInt(s string) int {
+	var n int
+	fmt.Sscanf(s, "%d", &n)
+	return n
 }
 
 // FormatHistory formats meal records into a readable string.

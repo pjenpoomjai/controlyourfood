@@ -52,7 +52,7 @@ func InitGroq() {
 	config := openai.DefaultConfig(apiKey)
 	config.BaseURL = "https://api.groq.com/openai/v1"
 	groqClient = openai.NewClientWithConfig(config)
-	log.Printf("✅ Groq client ready (text: %s, vision: %s)", textModel, visionModel)
+	log.Printf("✅ Groq client ready (text: %s, vision: %s)", textModels[0], visionModels[0])
 }
 
 // ── Conversation history ──────────────────────────────────────────────────────
@@ -165,7 +165,8 @@ func isQuotaError(err error) bool {
 }
 
 // callGroqWithFallback tries each model in the list until one succeeds.
-func callGroqWithFallback(models []string, systemPrompt string, messages []openai.ChatCompletionMessage) (string, error) {
+// Returns (reply, usage, modelUsed, error).
+func callGroqWithFallback(models []string, systemPrompt string, messages []openai.ChatCompletionMessage) (string, openai.Usage, string, error) {
 	ctx := context.Background()
 
 	allMessages := append([]openai.ChatCompletionMessage{
@@ -183,22 +184,22 @@ func callGroqWithFallback(models []string, systemPrompt string, messages []opena
 				log.Printf("quota hit on %s, switching to %s", model, models[i+1])
 				continue
 			}
-			return "", err
+			return "", openai.Usage{}, "", err
 		}
 		if len(resp.Choices) == 0 {
-			return "", fmt.Errorf("empty response from Groq")
+			return "", openai.Usage{}, "", fmt.Errorf("empty response from Groq")
 		}
 		if i > 0 {
 			log.Printf("used fallback model: %s", model)
 		}
-		return resp.Choices[0].Message.Content, nil
+		return resp.Choices[0].Message.Content, resp.Usage, model, nil
 	}
-	return "", fmt.Errorf("all models exhausted quota")
+	return "", openai.Usage{}, "", fmt.Errorf("all models exhausted quota")
 }
 
-// callGroq tries a specific model first, then falls back to the list.
-func callGroq(model, systemPrompt string, messages []openai.ChatCompletionMessage) (string, error) {
-	// Build list: requested model first, then remaining fallbacks
+// callGroq tries a specific model first, then falls back to the full text model list.
+// Returns (reply, usage, modelUsed, error).
+func callGroq(model, systemPrompt string, messages []openai.ChatCompletionMessage) (string, openai.Usage, string, error) {
 	list := []string{model}
 	for _, m := range textModels {
 		if m != model {
@@ -221,7 +222,7 @@ func AskText(userID, message, knowledgeBase string) string {
 		Content: message,
 	})
 
-	reply, err := callGroqWithFallback(textModels, system, msgs)
+	reply, usage, modelUsed, err := callGroqWithFallback(textModels, system, msgs)
 	if err != nil {
 		log.Printf("Groq text error [%s]: %v", userID, err)
 		return "ขออภัยค่ะ ระบบ AI ถึง quota แล้วค่ะ กรุณาลองใหม่ในอีกสักครู่ 🙏"
@@ -229,6 +230,13 @@ func AskText(userID, message, knowledgeBase string) string {
 
 	addHistory(userID, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: message})
 	addHistory(userID, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: reply})
+
+	// Log token usage in background (non-blocking)
+	go GetSheets().LogTokenUsage(userID, modelUsed, "text", message,
+		usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens)
+	log.Printf("tokens [%s] text: prompt=%d completion=%d total=%d model=%s",
+		userID, usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens, modelUsed)
+
 	return reply
 }
 
@@ -280,6 +288,11 @@ func AskImage(userID string, imageBytes []byte, mediaType, knowledgeBase string)
 		if len(resp.Choices) > 0 {
 			reply = resp.Choices[0].Message.Content
 		}
+		// Log token usage in background
+		go GetSheets().LogTokenUsage(userID, vm, "image", "[food image]",
+			resp.Usage.PromptTokens, resp.Usage.CompletionTokens, resp.Usage.TotalTokens)
+		log.Printf("tokens [%s] image: prompt=%d completion=%d total=%d model=%s",
+			userID, resp.Usage.PromptTokens, resp.Usage.CompletionTokens, resp.Usage.TotalTokens, vm)
 		break
 	}
 
@@ -306,7 +319,7 @@ JSON fields (leave blank if not mentioned):
 
 goal must be one of: "Lose weight", "Maintain weight", "Gain muscle", or blank.`, message)
 
-	reply, err := callGroq(textModel, "", []openai.ChatCompletionMessage{
+	reply, _, _, err := callGroq(textModels[0], "", []openai.ChatCompletionMessage{
 		{Role: openai.ChatMessageRoleUser, Content: prompt},
 	})
 	if err != nil {
@@ -371,7 +384,7 @@ Rules:
 
 Message: "%s"`, message)
 
-	reply, err := callGroq(textModel, "", []openai.ChatCompletionMessage{
+	reply, _, _, err := callGroq(textModels[0], "", []openai.ChatCompletionMessage{
 		{Role: openai.ChatMessageRoleUser, Content: prompt},
 	})
 	if err != nil {
@@ -417,7 +430,7 @@ Return JSON only: {"topic":"","knowledge":"","should_save":false}
 User: "%s"
 Bot: "%s"`, userMessage, botReply)
 
-	reply, err := callGroq(textModel, "", []openai.ChatCompletionMessage{
+	reply, _, _, err := callGroq(textModels[0], "", []openai.ChatCompletionMessage{
 		{Role: openai.ChatMessageRoleUser, Content: prompt},
 	})
 	if err != nil {

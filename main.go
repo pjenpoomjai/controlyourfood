@@ -113,8 +113,15 @@ func handleText(userID, replyToken, text string) {
 			"• 'โปรไฟล์ของฉัน' — ดูข้อมูลที่บันทึกไว้\n" +
 			"• 'อัปเดตข้อมูล' — แก้ไขข้อมูลส่วนตัว\n" +
 			"• 'ล้างประวัติ' — ล้างประวัติการสนทนา\n" +
+			"• 'สถิติ' หรือ '/stats' — ดู token ที่ใช้วันนี้\n" +
 			"• 'ช่วยเหลือ' — แสดงเมนูนี้"
 		replyText(replyToken, help)
+		return
+	}
+
+	if containsAny(lower, []string{"/stats", "สถิติ", "token", "ใช้ไปกี่", "เหลืออีกกี่", "ประวัติการถาม"}) {
+		sm := GetSheets()
+		replyText(replyToken, sm.GetDailyStats(userID))
 		return
 	}
 
